@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import secrets
@@ -15,6 +16,8 @@ import aiosqlite
 
 from .migrations import apply_migrations
 from .pg import PgConnection
+
+log = logging.getLogger("orderbot.db")
 
 
 async def reset_test_database(db: "Database") -> None:
@@ -707,6 +710,43 @@ class Database:
         row = await cursor.fetchone()
         return await self.get_order(int(row["id"])) if row else None
 
+    async def log_event(
+        self,
+        order_id: int,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        actor_id: int | None = None,
+    ) -> None:
+        """Хронология заказа: что, когда и кем изменено.
+
+        Ошибка записи события не должна ломать заказ — поэтому только в журнал.
+        """
+        if self.conn is None:
+            return
+        try:
+            await self.conn.execute(
+                "INSERT INTO order_events(order_id, kind, actor_id, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    int(order_id),
+                    kind,
+                    actor_id,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                ),
+            )
+            await self.conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Событие заказа №%s не записано: %s", order_id, exc)
+
+    async def order_events(self, order_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT created_at, kind, actor_id, payload FROM order_events "
+            "WHERE order_id = %s ORDER BY id DESC LIMIT %s",
+            (int(order_id), int(limit)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def update_order_status(self, order_id: int, status: str) -> bool:
         """Меняет статус, только если он реально другой. False — уже был этот."""
         assert self.conn is not None
@@ -715,7 +755,10 @@ class Database:
             (status, order_id, status),
         )
         await self.conn.commit()
-        return cursor.rowcount == 1
+        changed = cursor.rowcount == 1
+        if changed:
+            await self.log_event(order_id, "status", {"to": status})
+        return changed
 
     _ORDER_FIELDS = {
         "packed_at",
@@ -761,7 +804,14 @@ class Database:
             "UPDATE orders SET " + ", ".join(sets) + " WHERE " + where, params
         )
         await self.conn.commit()
-        return int(cursor.rowcount or 0) == 1
+        changed = int(cursor.rowcount or 0) == 1
+        if changed:
+            await self.log_event(
+                order_id,
+                "status",
+                {"from": list(from_statuses), "to": to_status, **{k: str(v) for k, v in fields.items()}},
+            )
+        return changed
 
     async def mark_order_ready(
         self, order_id: int, courier_chat_id: int | None
@@ -792,7 +842,10 @@ class Database:
             (int(order_id),),
         )
         await self.conn.commit()
-        return int(cursor.rowcount or 0) == 1
+        changed = int(cursor.rowcount or 0) == 1
+        if changed:
+            await self.log_event(order_id, "payment", {"method": "credit", "amount": 0})
+        return changed
 
     async def debt_list(self) -> list[dict[str, Any]]:
         assert self.conn is not None
@@ -817,6 +870,11 @@ class Database:
         amount = float(row["s"] or 0)
         if not count:
             return 0, 0.0
+        ids = await self.conn.execute(
+            "SELECT id FROM orders WHERE chef_id = %s AND payment_status = 'credit'",
+            (int(chef_id),),
+        )
+        order_ids = [int(row["id"]) for row in await ids.fetchall()]
         await self.conn.execute(
             "UPDATE orders SET payment_status = 'paid', payment_method = 'cash', "
             "paid_amount = total, paid_at = %s "
@@ -824,6 +882,10 @@ class Database:
             (now, int(chef_id)),
         )
         await self.conn.commit()
+        for order_id in order_ids:
+            await self.log_event(
+                order_id, "payment", {"method": "cash", "settled_debt": True}
+            )
         return count, amount
 
     async def sold_items(self, days: int = 30) -> list[dict[str, Any]]:
@@ -1100,7 +1162,12 @@ class Database:
             (method, round(float(amount), 2), now, int(order_id)),
         )
         await self.conn.commit()
-        return int(cursor.rowcount or 0) == 1
+        changed = int(cursor.rowcount or 0) == 1
+        if changed:
+            await self.log_event(
+                order_id, "payment", {"method": method, "amount": round(float(amount), 2)}
+            )
+        return changed
 
     async def create_ton_payment(
         self, order_id: int, comment: str, amount_nano: int, minutes: int = 15
@@ -1236,6 +1303,9 @@ class Database:
             )
             if int(order.rowcount or 0) != 1:
                 raise RuntimeError("order not payable")
+        await self.log_event(
+            order_id, "payment", {"method": "usdt", "amount": round(float(amount), 2), "tx": tx_hash}
+        )
         return True
 
     async def mark_ton_payment_paid(
