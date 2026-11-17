@@ -612,3 +612,22 @@ def order_detail_keyboard(
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def morning_price_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Утреннее сообщение: заказать «как обычно», каталог, отказ от рассылки."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="📦 Как обычно", callback_data=f"rday:yes:{user_id}")]
+    ]
+    if CATALOG_WEBAPP_URL:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📖 Каталог с ценами", web_app=WebAppInfo(url=CATALOG_WEBAPP_URL)
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="🔕 Не присылать", callback_data=f"priceoff:{user_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -37,6 +37,7 @@ from orderbot.keyboards import (
     manager_status_keyboard,
     reminder_keyboard,
 )
+from orderbot.pricecast import send_morning_prices
 from orderbot.stt import Transcriber
 from orderbot.summary import today_summary
 from orderbot.watch import ErrorWatch
@@ -570,6 +571,18 @@ async def _evening_loop(bot: Bot, db: Database, settings: Settings) -> None:
             log.warning("Ошибка вечерней сводки: %s", exc)
 
 
+async def _price_morning_loop(
+    bot: Bot, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    """Утренние цены клиентам с кнопкой «Как обычно» (включает владелец)."""
+    while True:
+        try:
+            await send_morning_prices(bot, db, settings, catalog)
+        except Exception as exc:
+            log.warning("Ошибка утренней рассылки цен: %s", exc)
+        await asyncio.sleep(30 * 60)
+
+
 async def _morning_summary(bot: Bot, db: Database, settings: Settings) -> bool:
     """Сводка «что горит» владельцу каждое утро, один раз в день."""
     manager = settings.manager_chat_id
@@ -986,6 +999,9 @@ async def run() -> int:
     morning_task = asyncio.create_task(
         _morning_loop(bot, db, settings), name="morning-summary"
     )
+    price_task = asyncio.create_task(
+        _price_morning_loop(bot, db, settings, catalog), name="price-morning"
+    )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"
     )
@@ -1027,6 +1043,7 @@ async def run() -> int:
             maintenance_task,
             evening_task,
             morning_task,
+            price_task,
             weekly_task,
             reminder_task,
             verify_task,

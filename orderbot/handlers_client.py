@@ -942,3 +942,21 @@ async def cb_client_cancel(
     except Exception:
         log.debug("Не удалось отправить короткое сообщение об отмене", exc_info=True)
     await callback.answer("Отменил")
+
+
+@router.callback_query(F.data.startswith("priceoff:"))
+async def cb_price_off(callback: CallbackQuery, db: Database) -> None:
+    """Клиент отказался от утренних сообщений с ценами."""
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    await db.set_setting(f"price_optout:{callback.from_user.id}", "1")
+    try:
+        await callback.message.edit_text(
+            "Хорошо, больше не присылаю цены по утрам. "
+            "Прайс всегда доступен по команде /price.",
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отключено")

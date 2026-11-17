@@ -353,3 +353,33 @@ async def cmd_order_log(
         detail = ", ".join(f"{key}={value}" for key, value in payload.items())
         lines.append(f"{moment} · {esc(str(kind))} {esc(detail)[:120]}")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("price_morning"))
+async def cmd_price_morning(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Включает/выключает утреннюю рассылку цен клиентам."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg in ("on", "1", "вкл", "да"):
+        await db.set_setting("price_morning_enabled", "1")
+        hour = await db.get_setting("price_morning_hour", "8")
+        await message.answer(
+            f"Утренние цены включены. Отправка после {hour}:00 по Ташкенту, "
+            "один раз в день, только активным клиентам.\n"
+            "Выключить: /price_morning off"
+        )
+        return
+    if arg in ("off", "0", "выкл", "нет"):
+        await db.set_setting("price_morning_enabled", "0")
+        await message.answer("Утренние цены выключены.")
+        return
+    enabled = await db.get_setting("price_morning_enabled", "0") == "1"
+    hour = await db.get_setting("price_morning_hour", "8")
+    await message.answer(
+        f"Утренние цены: {'включены' if enabled else 'выключены'}, после {hour}:00.\n"
+        "Включить: /price_morning on · выключить: /price_morning off\n"
+        "Время меняется настройкой price_morning_hour."
+    )
