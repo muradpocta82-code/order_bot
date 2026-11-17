@@ -1,0 +1,10 @@
+[Unit]
+Description=Order bot: еженедельная проверка бэкапа
+
+[Timer]
+OnCalendar=Sun 03:30
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

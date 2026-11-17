@@ -1,0 +1,13 @@
+[Unit]
+Description=Order bot: проверка восстановимости бэкапа PostgreSQL
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/order_bot
+EnvironmentFile=/opt/order_bot/.env
+Environment=TZ=Asia/Tashkent
+ExecStart=/opt/order_bot/venv/bin/python /opt/order_bot/scripts/verify_backup.py
+Nice=10
+IOSchedulingClass=idle

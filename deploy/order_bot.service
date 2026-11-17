@@ -1,0 +1,51 @@
+[Unit]
+Description=Order bot (Telegram)
+Documentation=https://core.telegram.org/bots/api
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=orderbot
+Group=orderbot
+WorkingDirectory=/opt/order_bot
+EnvironmentFile=/opt/order_bot/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=Asia/Tashkent
+ExecStart=/opt/order_bot/venv/bin/python /opt/order_bot/main.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=order_bot
+
+# изоляция процесса: боту не нужны права root и доступ к системе
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/opt/order_bot
+UMask=0077
+ProtectClock=true
+ProtectKernelLogs=true
+RemoveIPC=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+
+# потолок памяти: при утечке умрёт только бот, а не весь сервер
+MemoryMax=900M
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

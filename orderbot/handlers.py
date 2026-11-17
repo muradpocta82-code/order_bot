@@ -1,0 +1,2774 @@
+"""Telegram-хендлеры: заказ, уточнения, подтверждение, менеджер."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import secrets
+import shutil
+import time
+from datetime import datetime, timedelta
+from math import ceil
+from pathlib import Path
+from typing import Any
+
+from aiogram import Bot, F, Router
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
+from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.types import BufferedInputFile, CallbackQuery, FSInputFile, Message
+
+from .ai import AIClient
+from .catalog import Catalog, diff_catalogs, normalize
+from .config import Settings
+from .db import Database
+from .tonpay import (
+    TonPay,
+    TonPayError,
+    match_payment,
+    nano_to_text,
+    payment_link,
+    qr_png,
+    usdt_to_nano,
+)
+from .drafts import (
+    all_resolved,
+    apply_catalog,
+    build_draft,
+    draft_from_order,
+    draft_from_usual,
+    mark_not_in_catalog,
+    mark_skipped,
+    order_items_payload,
+    resolve_item,
+    set_item_qty,
+)
+from .extras import (
+    correct_voice_text,
+    find_order_item,
+    items_summary,
+    parse_edit,
+    weekly_report,
+)
+from .formatting import (
+    esc,
+    format_candidates_question,
+    format_catalog,
+    format_client_order,
+    format_missing,
+    format_order,
+    format_orders_page,
+    format_quality,
+    format_qty_question,
+    LOCAL_CURRENCY,
+    money,
+    set_local_rate,
+    split_message,
+)
+from .keyboards import (
+    alt_keyboard,
+    candidates_keyboard,
+    client_back_keyboard,
+    client_menu_keyboard,
+    broadcast_confirm_keyboard,
+    client_order_keyboard,
+    contact_keyboard,
+    location_keyboard,
+    rating_keyboard,
+    weigh_confirm_keyboard,
+    courier_back_keyboard,
+    courier_panel_keyboard,
+    courier_status_keyboard,
+    date_shift_keyboard,
+    edit_confirm_keyboard,
+    manager_panel_keyboard,
+    manager_back_keyboard,
+    manager_status_keyboard,
+    order_detail_keyboard,
+    orders_list_keyboard,
+    price_update_keyboard,
+    price_undo_keyboard,
+    qty_keyboard,
+    retry_keyboard,
+    slots_keyboard,
+    unit_keyboard,
+    user_access_keyboard,
+)
+from .nlu import ParsedOrder, detect_intent, parse_local, parse_number
+from .slots import default_time as slot_default_time
+from .slots import parse_slots, slot_labels
+from .stt import Transcriber
+from .units import canon_unit, format_qty, pack_size, plural, price_per_unit
+
+log = logging.getLogger(__name__)
+router = Router(name="orderbot")
+
+BOT_STARTED_AT = time.time()
+_last_error: dict[str, Any] = {"at": 0.0, "text": ""}
+from .state import pending_prices as _pending_prices  # noqa: E402
+
+
+def record_error(exc: BaseException) -> None:
+    """Запоминает последнюю необработанную ошибку для /health."""
+    _last_error["at"] = time.time()
+    _last_error["text"] = type(exc).__name__
+
+# Локальный парсер надёжен для типовых заказов. Если внешний AI завис,
+# не держим повара в «Разбираю…» дольше этого времени.
+AI_PARSE_TIMEOUT = 30.0
+
+NO_ITEMS_TEXT = "Не понял заказ. Напишите, например: «2 кг филе, завтра к 10»."
+
+
+from .handlers_courier import (
+    _courier_ok,
+    _courier_order_allowed,
+    _edit_courier_card,
+)
+from .handlers_courier import (
+    _courier_ok,
+    _courier_order_allowed,
+    _edit_courier_card,
+)
+from .notify import (
+    ERR_ALERT_WINDOW,
+    RETRY_TEXT,
+    _close_order_cards,
+    _courier_chat,
+    _courier_panel_text,
+    _detach_card,
+    _drop_card_buttons,
+    _manager_chat,
+    _manager_panel_text,
+    _remember_retry,
+    _report_failure,
+    _send_order_card,
+    _send_with_retry,
+    _take_retry,
+)
+
+from .texts import MANAGER_ONLY_TEXT, RATE_LIMIT_TEXT  # noqa: E402
+
+MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
+
+/start — панель
+/orders — входящие
+/order 12 — заказ №12
+/price — прайс
+/missing — чего нет в прайсе
+/quality — качество разбора
+/health — здоровье бота
+/slots — интервалы доставки (например /slots 9-12,12-15,15-18)
+"""
+
+COURIER_HELP_TEXT = """🚚 <b>Доставщик</b>
+
+/start — панель доставок
+/deliveries — активные доставки
+/order 12 — карточка заказа
+/price — прайс
+
+В карточке: «Выехал» и «Наличные получены»,
+затем «Доставлено». Без отметки оплаты доставку закрыть нельзя.
+"""
+
+START_TEXT = "Здравствуйте! Напишите заказ как удобно — сразу передам упаковщику. Можно текстом или голосом."
+
+HELP_TEXT = """Напишите заказ одним сообщением — сразу передам упаковщику.
+
+Например: 2 кг филе, 5 упаковок моцареллы, завтра к 10:00.
+
+/price — список товаров
+/last — последний заказ
+/cancel — отменить"""
+
+
+# ---------------------------------------------------------------------------
+# заведение и допуск новых поваров
+# ---------------------------------------------------------------------------
+from .onboarding import (
+    _ask_address,
+    _ask_phone,
+    _ask_venue,
+    _finish_profile,
+    _notify_new_user,
+    _profile_step,
+    _user_access_gate,
+    _valid_phone,
+)
+
+from .draftprep import (
+    _apply_cutoff,
+    _apply_stock,
+    _apply_unit_choice,
+    _apply_units,
+    _next_workday,
+    _suggest_similar,
+)
+
+from .roles import (
+    EXTRA_COURIERS,
+    EXTRA_MANAGERS,
+    _back_keyboard,
+    _is_courier,
+    _is_manager,
+    _is_staff,
+    _manager_ok,
+    load_staff_from_db,
+)
+
+async def _understand(text: str, ai: AIClient, settings: Settings) -> ParsedOrder:
+    now = datetime.now(settings.timezone)
+    try:
+        parsed = await asyncio.wait_for(
+            ai.parse(text, now), timeout=AI_PARSE_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "AI не ответил за %.0f с — разбираю локально", AI_PARSE_TIMEOUT
+        )
+        parsed = None
+    except Exception:
+        # Любой сбой AI не должен мешать принять заказ локальным парсером.
+        log.exception("Ошибка AI-разбора — разбираю локально")
+        parsed = None
+    if parsed is not None and parsed.items:
+        return parsed
+    return parse_local(text, settings.timezone, now)
+
+
+async def _intent_reply(
+    kind: str,
+    user_id: int,
+    chat_id: int,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+):
+    """Короткий ответ на не-заказ. Ничего не отправляет и не вызывает AI."""
+    if kind == "greeting":
+        usually = await db.usual_items(user_id)
+        return START_TEXT, client_menu_keyboard(usually, catalog)
+    if kind == "thanks":
+        return (
+            "Пожалуйста! Если нужно что-то ещё — просто напишите.",
+            client_back_keyboard(),
+        )
+    if kind == "price":
+        return format_catalog(catalog), _back_keyboard(settings, user_id, chat_id)
+    if kind == "help":
+        return HELP_TEXT, client_back_keyboard()
+    if kind in ("status", "cancel"):
+        order = await db.last_order_for_user(user_id)
+        if order is None:
+            return "Заказов пока нет.", client_back_keyboard()
+        if kind == "status":
+            labels = {
+                "new": "принят",
+                "accepted": "собирается",
+                "ready": "собран, ждёт доставщика",
+                "delivering": "в доставке",
+                "done": "доставлен",
+                "cancelled": "отменён",
+                "failed": "не доставлен",
+            }
+            status = labels.get(order.get("status"), "принят")
+            text = (
+                format_client_order(order, "Ваш заказ")
+                + f"\n\nСтатус: {status}"
+            )
+            return text, client_order_keyboard(order["id"])
+        if order.get("status") == "new":
+            text = (
+                format_client_order(order, "Последний заказ")
+                + "\n\nЕсли передумали — нажмите «Отменить»."
+            )
+            return text, client_order_keyboard(order["id"])
+        if order.get("status") == "accepted":
+            return (
+                "Заказ уже в работе, позвоните менеджеру",
+                client_back_keyboard(),
+            )
+        return "Заказ уже закрыт.", client_back_keyboard()
+    return None
+
+
+def _format_price_diff(diff: dict[str, Any]) -> str:
+    lines = [
+        "📋 <b>Новый список</b>",
+        "",
+        f"Позиций: {diff['old_count']} → {diff['new_count']}",
+        f"Изменились цены: {len(diff['price_changes'])}",
+        f"Новые: {len(diff['added'])}",
+        f"Убраны: {len(diff['removed'])}",
+    ]
+    if diff["price_changes"]:
+        lines.append("")
+        for previous, current in diff["price_changes"][:7]:
+            lines.append(
+                f"{esc(current.name)}: {money(previous.price)} → {money(current.price)}"
+            )
+    if diff["added"]:
+        lines.append("")
+        for item in diff["added"][:7]:
+            lines.append(f"+ {esc(item.name)}")
+    return "\n".join(lines)
+
+
+async def _edit_panel(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+) -> None:
+    """Меняет одно сообщение вместо отправки нового — чат не забивается."""
+    try:
+        await _send_with_retry(
+            lambda: bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        )
+    except TelegramBadRequest:
+        # Сообщение уже изменили или оно слишком старое — новый дубль не нужен.
+        pass
+
+
+_draft_locks: dict[str, asyncio.Lock] = {}
+
+
+def prune_locks() -> int:
+    """Убирает завершённые блокировки, чтобы словари не росли вечно."""
+    removed = 0
+    for mapping in (_draft_locks, _order_locks):
+        for key, lock in list(mapping.items()):
+            if not lock.locked() and not getattr(lock, "_waiters", None):
+                mapping.pop(key, None)
+                removed += 1
+    return removed
+
+
+async def _advance_draft(
+    bot: Bot,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    draft: dict,
+    chat_id: int,
+    message_id: int,
+) -> bool:
+    """Один вопрос за раз в одном сообщении. Когда всё ясно — сразу менеджеру."""
+    lock = _draft_locks.setdefault(draft["id"], asyncio.Lock())
+    async with lock:
+        fresh = await db.get_draft(draft["id"])
+        if fresh is None or fresh.get("status") != "draft":
+            return False
+
+        for item in fresh.get("items", []):
+            if item.get("status") == "unavailable":
+                fresh["questions"] = int(fresh.get("questions") or 0) + 1
+                await db.save_draft(fresh)
+                await db.log_question(
+                    item.get("name") or item.get("raw") or "", "stock"
+                )
+                suggestions = await _suggest_similar(catalog, item)
+                name = item.get("name") or item.get("raw") or "позиция"
+                text = f"«{esc(name)}» сегодня нет."
+                text += (
+                    " Можно заменить на похожее:"
+                    if suggestions
+                    else " Уберите её из заказа."
+                )
+                await _edit_panel(
+                    bot,
+                    chat_id,
+                    message_id,
+                    text,
+                    alt_keyboard(fresh["id"], item["idx"], suggestions),
+                )
+                return True
+            if item.get("status") == "needs_unit":
+                fresh["questions"] = int(fresh.get("questions") or 0) + 1
+                await db.save_draft(fresh)
+                await db.log_question(
+                    item.get("name") or item.get("raw") or "", "unit"
+                )
+                base = item.get("catalog_unit") or "шт"
+                size = pack_size(item.get("pack"), base)
+                qty = float(item.get("qty") or 1)
+                text = f"<b>{esc(item.get('name') or '')}</b> продаётся "
+                text += plural(base, 2)
+                if size:
+                    text += f" по {format_qty(size)} {base}"
+                text += ". Сколько?"
+                await _edit_panel(
+                    bot,
+                    chat_id,
+                    message_id,
+                    text,
+                    unit_keyboard(
+                        fresh["id"],
+                        item["idx"],
+                        base,
+                        item.get("pack"),
+                        qty,
+                        item.get("unit") or base,
+                    ),
+                )
+                return True
+            if item.get("status") == "needs_choice":
+                fresh["questions"] = int(fresh.get("questions") or 0) + 1
+                await db.save_draft(fresh)
+                await db.log_question(item.get("raw") or "", "choice")
+                await _edit_panel(
+                    bot,
+                    chat_id,
+                    message_id,
+                    format_candidates_question(item),
+                    candidates_keyboard(
+                        fresh["id"],
+                        item["idx"],
+                        catalog,
+                        item.get("candidates") or [],
+                    ),
+                )
+                return True
+            if item.get("status") == "needs_qty":
+                fresh["questions"] = int(fresh.get("questions") or 0) + 1
+                await db.save_draft(fresh)
+                await db.log_question(
+                    item.get("name") or item.get("raw") or "", "qty"
+                )
+                await _edit_panel(
+                    bot,
+                    chat_id,
+                    message_id,
+                    format_qty_question(item),
+                    qty_keyboard(
+                        fresh["id"],
+                        item["idx"],
+                        item.get("final_unit") or item.get("unit"),
+                    ),
+                )
+                return True
+
+        items = order_items_payload(fresh)
+        if not items:
+            fresh["status"] = "cancelled"
+            await db.save_draft(fresh)
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                "Вы пропустили все позиции. Пришлите заказ ещё раз.",
+                client_back_keyboard(),
+            )
+            return True
+
+        min_total = float(settings.min_order_usd or 0)
+        if min_total and float(fresh.get("total") or 0) < min_total:
+            await db.save_draft(fresh)
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                f"Минимальная сумма заказа — {money(min_total)}. "
+                f"Сейчас в заказе {money(fresh.get('total'))}. Добавьте позиции.",
+                client_back_keyboard(),
+            )
+            return True
+        user = await db.get_user(int(fresh.get("user_id") or 0))
+        if user is None or not user.get("phone") or not user.get("address"):
+            fresh["status"] = "draft"
+            await db.save_draft(fresh)
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                "Сначала заполните профиль: телефон и адрес доставки.\n"
+                "Нажмите /start и ответьте на вопросы.",
+                client_back_keyboard(),
+            )
+            return True
+        if not fresh.get("delivery_time"):
+            slots = parse_slots(await db.get_setting("delivery_slots"))
+            await db.save_draft(fresh)
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                "Когда удобно привезти? Выберите интервал — упаковщик будет знать, "
+                "к какому времени собирать заказ.",
+                slots_keyboard(fresh["id"], slot_labels(slots)),
+            )
+            return True
+
+        fresh["delivery_address"] = user.get("address")
+        fresh["delivery_phone"] = user.get("phone")
+        fresh["payment_method"] = "cash"
+
+        if not await db.claim_draft(fresh["id"]):
+            return False
+        fresh["status"] = "confirming"
+        manager = _manager_chat(settings)
+        try:
+            order_id = await db.create_order(
+                fresh, items, manager, draft_id=fresh["id"]
+            )
+        except Exception:
+            await db.release_draft(fresh["id"])
+            log.exception("Не удалось сохранить заказ из черновика %s", fresh["id"])
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                "Не получилось сохранить заказ. Пришлите его ещё раз.",
+                client_back_keyboard(),
+            )
+            return True
+
+        log.info(
+            "Заказ №%s: позиций=%s, сумма=%s, повар=%s (id=%s)",
+            order_id,
+            len(items),
+            money(sum(float(item.get("total") or 0) for item in items)),
+            fresh.get("user_name"),
+            fresh.get("user_id"),
+        )
+        fresh["status"] = "confirmed"
+        try:
+            await db.save_draft(fresh)
+        except Exception:
+            log.exception("Не удалось обновить черновик %s", fresh["id"])
+
+        order = await db.get_order(order_id)
+        assert order is not None
+        if user and user.get("venue"):
+            order["venue"] = user["venue"]
+
+        manager_sent = False
+        if manager is not None:
+            card_id: int | None = None
+            try:
+                card_id = await _send_order_card(
+                    bot,
+                    manager,
+                    order,
+                    "🆕 Новый заказ",
+                    manager_status_keyboard(order_id, "new"),
+                )
+            except Exception:
+                log.exception("Не удалось отправить заказ №%s менеджеру", order_id)
+            else:
+                manager_sent = True
+                try:
+                    await db.mark_order_notified(order_id)
+                except Exception:
+                    log.exception("Не удалось отметить заказ №%s доставленным", order_id)
+                if card_id:
+                    try:
+                        await db.set_order_cards(order_id, manager_card=card_id)
+                    except Exception:
+                        log.warning("Не удалось сохранить id карточки заказа №%s", order_id)
+                log.info("Заказ №%s отправлен менеджеру %s", order_id, manager)
+
+        if manager is None:
+            text = format_client_order(order, "📦 Заказ")
+            text += "\n\n<i>Упаковщик пока не подключён.</i>"
+        elif manager_sent:
+            text = format_client_order(order, "✅ Заказ отправлен")
+        else:
+            text = format_client_order(order, "⚠️ Заказ сохранён")
+            text += "\n\n<i>Передам упаковщику, как только появится связь.</i>"
+        await _edit_panel(
+            bot, chat_id, message_id, text, client_order_keyboard(order_id)
+        )
+        try:
+            await db.set_order_cards(order_id, chef_card=message_id)
+        except Exception:
+            log.warning("Не удалось сохранить карточку повара заказа №%s", order_id)
+        note = fresh.get("date_note")
+        if note:
+            try:
+                await bot.send_message(
+                    chat_id, esc(note), reply_markup=date_shift_keyboard(order_id)
+                )
+            except Exception:
+                log.warning("Не удалось отправить пометку о переносе даты")
+        return True
+
+
+_order_locks: dict[int, asyncio.Lock] = {}
+
+
+async def _process_order(message: Message, *args, **kwargs) -> None:
+    """Один чат — один заказ одновременно.
+
+    Иначе два быстрых сообщения разбираются параллельно, и более старое
+    может завершиться позже, отменив новый черновик.
+    """
+    lock = _order_locks.setdefault(message.chat.id, asyncio.Lock())
+    async with lock:
+        await _process_order_serial(message, *args, **kwargs)
+
+
+async def _process_order_serial(
+    message: Message,
+    text: str,
+    source: str,
+    transcript: str | None,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    ai: AIClient,
+    status_message: Message | None = None,
+) -> None:
+    bot = message.bot
+    status = status_message or await message.answer("Секунду, читаю заказ…")
+    if transcript:
+        try:
+            await status.edit_text(
+                f"🎤 <i>Услышал:</i> {esc(transcript)}\n\nСобираю заказ…"
+            )
+        except Exception:
+            log.debug("Не удалось показать расшифровку", exc_info=True)
+    try:
+        parsed = await _understand(text, ai, settings)
+        if not parsed.items:
+            await status.edit_text(NO_ITEMS_TEXT)
+            return
+
+        await db.cancel_active_drafts(message.chat.id)
+        aliases = await db.get_aliases(message.from_user.id)
+        draft = build_draft(
+            parsed=parsed,
+            catalog=catalog,
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            user_name=message.from_user.full_name,
+            username=message.from_user.username,
+            source=source,
+            transcript=transcript,
+            accept_threshold=settings.fuzzy_accept,
+            candidate_threshold=settings.fuzzy_candidate,
+            aliases=aliases,
+        )
+        await _apply_cutoff(draft, db, settings)
+        await _apply_stock(draft, db, catalog)
+        await _apply_units(draft, db, catalog)
+        await db.create_draft(draft)
+        await _advance_draft(
+            bot,
+            db,
+            settings,
+            catalog,
+            draft,
+            status.chat.id,
+            status.message_id,
+        )
+    except Exception as exc:
+        log.exception("Не удалось обработать заказ — сохраняю текст для повтора")
+        try:
+            await _remember_retry(db, message.chat.id, text, source, transcript)
+        except Exception:
+            log.warning("Не удалось сохранить текст заказа для повтора")
+        try:
+            await status.edit_text(RETRY_TEXT, reply_markup=retry_keyboard())
+        except Exception:
+            try:
+                await message.answer(RETRY_TEXT, reply_markup=retry_keyboard())
+            except Exception:
+                log.debug("Не удалось показать кнопку повтора", exc_info=True)
+        await _report_failure(bot, db, settings, "order", exc)
+
+
+# ---------------------------------------------------------------------------
+# команды
+# ---------------------------------------------------------------------------
+
+
+async def _orders_page(db: Database, kind: str, page: int):
+    statuses = (
+        ("new", "accepted", "ready", "delivering") if kind == "inbox" else None
+    )
+    total = await db.count_orders(statuses)
+    pages = max(1, ceil(total / 10))
+    page = max(0, min(page, pages - 1))
+    orders = await db.list_orders_page(limit=10, offset=page * 10, statuses=statuses)
+    title = "📥 <b>Входящие заказы</b>" if kind == "inbox" else "📜 <b>История заказов</b>"
+    return (
+        format_orders_page(orders, page, pages, total, title),
+        orders_list_keyboard(orders, kind, page, pages),
+    )
+
+
+async def _courier_page(db: Database, page: int):
+    statuses = ("ready", "delivering")
+    total = await db.count_orders(statuses)
+    pages = max(1, ceil(total / 10))
+    page = max(0, min(page, pages - 1))
+    orders = await db.list_orders_page(limit=10, offset=page * 10, statuses=statuses)
+    return (
+        format_orders_page(orders, page, pages, total, "🚚 <b>Активные доставки</b>"),
+        courier_panel_keyboard(orders, page, pages),
+    )
+
+
+@router.message(CommandStart())
+async def cmd_start(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    await db.set_chat_state(message.chat.id, "qty_input", "")
+    if _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer(
+            await _manager_panel_text(db), reply_markup=manager_panel_keyboard()
+        )
+        return
+    if _is_courier(settings, message.from_user.id, message.chat.id):
+        text, keyboard = await _courier_page(db, 0)
+        await message.answer(
+            await _courier_panel_text(db) + "\n\n" + text,
+            reply_markup=keyboard,
+        )
+        return
+    user = await db.ensure_user(
+        message.from_user.id,
+        message.from_user.full_name,
+        message.from_user.username,
+    )
+    if user.get("access") == "rejected":
+        await message.answer("Доступ закрыт. Напишите менеджеру.")
+        return
+    if await _profile_step(message, db, user, catalog):
+        return
+    if user.get("access") == "pending":
+        await message.answer("Ждём подтверждения от менеджера.")
+        return
+    usually = await db.usual_items(message.from_user.id)
+    await message.answer(
+        f"Здравствуйте! Заведение: <b>{esc(user['venue'])}</b>.\n\n{START_TEXT}",
+        reply_markup=client_menu_keyboard(usually, catalog),
+    )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message, settings: Settings) -> None:
+    if _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer(
+            MANAGER_HELP_TEXT, reply_markup=manager_back_keyboard()
+        )
+        return
+    if _is_courier(settings, message.from_user.id, message.chat.id):
+        await message.answer(
+            COURIER_HELP_TEXT, reply_markup=courier_back_keyboard()
+        )
+        return
+    await message.answer(HELP_TEXT, reply_markup=client_back_keyboard())
+
+
+@router.message(Command("id"))
+async def cmd_id(message: Message, settings: Settings) -> None:
+    await message.answer(
+        f"Ваш чат: <code>{message.chat.id}</code>\n"
+        f"Пользователь: <code>{message.from_user.id}</code>",
+        reply_markup=_back_keyboard(settings, message.from_user.id, message.chat.id),
+    )
+
+
+@router.message(Command("price"))
+async def cmd_price(message: Message, catalog: Catalog, settings: Settings) -> None:
+    text = format_catalog(catalog)
+    keyboard = _back_keyboard(settings, message.from_user.id, message.chat.id)
+    if len(text) <= 4000:
+        await message.answer(text, reply_markup=keyboard)
+        return
+    chunk = ""
+    for line in text.split("\n"):
+        if len(chunk) + len(line) + 1 > 3900:
+            await message.answer(chunk, reply_markup=keyboard)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk.strip():
+        await message.answer(chunk, reply_markup=keyboard)
+
+
+@router.message(Command("orders"))
+async def cmd_orders(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    text, keyboard = await _orders_page(db, "inbox", 0)
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.message(Command("deliveries"))
+async def cmd_deliveries(
+    message: Message, db: Database, settings: Settings
+) -> None:
+    if not _is_courier(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только доставщику.")
+        return
+    text, keyboard = await _courier_page(db, 0)
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.message(Command("missing"))
+async def cmd_missing(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    rows = await db.list_missing(days=30, limit=15)
+    await message.answer(
+        format_missing(rows), reply_markup=manager_back_keyboard()
+    )
+
+
+@router.message(Command("quality"))
+async def cmd_quality(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    stats = await db.quality_stats(days=30)
+    await message.answer(
+        format_quality(stats), reply_markup=manager_back_keyboard()
+    )
+
+
+@router.message(Command("stop"))
+async def cmd_stop_item(
+    message: Message, command: CommandObject, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    query = (command.args or "").strip()
+    if not query:
+        await message.answer("Напишите товар: <code>/stop сыр пармезан</code>")
+        return
+    match = catalog.match(query, limit=1, min_score=55)
+    if not match:
+        await message.answer("Такого товара нет в прайсе.")
+        return
+    item = match[0].item
+    await db.set_item_available(item.id, False, 0)
+    await message.answer(
+        f"🚫 «{esc(item.name)}» помечен как «нет в наличии».", reply_markup=manager_back_keyboard()
+    )
+
+
+@router.message(Command("start_item"))
+async def cmd_start_item(
+    message: Message, command: CommandObject, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    query = (command.args or "").strip()
+    if not query:
+        await message.answer("Напишите товар: <code>/start_item сыр пармезан</code>")
+        return
+    match = catalog.match(query, limit=1, min_score=55)
+    if not match:
+        await message.answer("Такого товара нет в прайсе.")
+        return
+    item = match[0].item
+    await db.set_item_available(item.id, True, None)
+    await message.answer(
+        f"✅ «{esc(item.name)}» снова в наличии.", reply_markup=manager_back_keyboard()
+    )
+
+
+@router.message(Command("slots"))
+async def cmd_slots(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    raw = (await db.get_setting("delivery_slots") or "").strip()
+    arg = (command.args or "").strip()
+    current = ", ".join(slot_labels(parse_slots(raw)))
+    if not arg:
+        await message.answer(
+            f"Интервалы доставки: <b>{current}</b>\n"
+            "Задать свои: <code>/slots 9-12,12-15,15-18</code>\n"
+            "Сбросить к обычным: <code>/slots default</code>"
+        )
+        return
+    if arg.lower() in ("default", "сброс", "обычные"):
+        await db.set_setting("delivery_slots", "")
+        await message.answer(
+            f"Вернул обычные интервалы: <b>{', '.join(slot_labels(parse_slots(None)))}</b>"
+        )
+        return
+    slots = parse_slots(arg)
+    if len(slots) == 1 and "-" not in arg:
+        await message.answer(
+            "Нужен формат «начало-конец», например <code>/slots 9-12,12-15</code>"
+        )
+        return
+    value = ",".join(f"{start}-{end}" for start, end in slots)
+    await db.set_setting("delivery_slots", value)
+    await message.answer(
+        f"Записал интервалы: <b>{', '.join(slot_labels(slots))}</b>\n"
+        "Клиенту, который не назвал время, бот предложит выбрать один из них."
+    )
+
+
+@router.message(Command("cutoff"))
+async def cmd_cutoff(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    raw = (await db.get_setting("cutoff_time") or "").strip()
+    arg = (command.args or "").strip().lower()
+    if not arg:
+        await message.answer(
+            f"Время отсечки: <b>{raw or 'не задано'}</b>\n"
+            "Задать: <code>/cutoff 18:00</code>, выключить: <code>/cutoff off</code>"
+        )
+        return
+    if arg in ("off", "выкл", "нет"):
+        await db.set_setting("cutoff_time", "")
+        await message.answer("Отсечку выключил.")
+        return
+    match = re.fullmatch(r"([01]?\d|2[0-3])[:.]([0-5]\d)", arg)
+    if not match:
+        await message.answer("Формат: <code>/cutoff 18:00</code>")
+        return
+    value = f"{int(match.group(1)):02d}:{match.group(2)}"
+    await db.set_setting("cutoff_time", value)
+    await message.answer(
+        f"Отсечка: после <b>{value}</b> заказы на завтра переносятся на послезавтра."
+    )
+
+
+@router.message(Command("weekend"))
+async def cmd_weekend(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    names = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    current = (await db.get_setting("weekend_days") or "").strip()
+    arg = (command.args or "").strip().lower()
+    if not arg:
+        pretty = ", ".join(names[int(d)] for d in current.split(",") if d.isdigit()) or "нет"
+        await message.answer(
+            f"Выходные дни доставки: <b>{pretty}</b>\n"
+            "Задать: <code>/weekend 5,6</code> (0 — понедельник), выключить: <code>/weekend off</code>"
+        )
+        return
+    if arg in ("off", "выкл", "нет"):
+        await db.set_setting("weekend_days", "")
+        await message.answer("Выходные выключил.")
+        return
+    days = sorted({int(part) for part in re.findall(r"[0-6]", arg)})
+    if not days:
+        await message.answer("Формат: <code>/weekend 5,6</code>")
+        return
+    value = ",".join(str(day) for day in days)
+    await db.set_setting("weekend_days", value)
+    await message.answer(
+        "Выходные дни доставки: <b>" + ", ".join(names[day] for day in days) + "</b>."
+    )
+
+
+@router.message(Command("export"))
+async def cmd_export(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    raw = (command.args or "").strip()
+    days = int(raw) if raw.isdigit() and 1 <= int(raw) <= 365 else 7
+    now = datetime.now()
+    start = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    # +1 секунда: заказ, созданный в эту же секунду, тоже попадает в отчёт.
+    end = (now + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    orders = await db.orders_between(start, end)
+    if not orders:
+        await message.answer(f"За последние {days} дней заказов нет.")
+        return
+    venues = await db.venue_map(
+        [int(order["chef_id"]) for order in orders if order.get("chef_id")]
+    )
+    try:
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Заказы"
+        sheet.append(["Дата", "Заведение", "Позиции", "Сумма", "Статус"])
+        for order in orders:
+            venue = venues.get(int(order.get("chef_id") or 0)) or order.get("chef_name") or ""
+            positions = "; ".join(
+                f"{item.get('name')} — {format_qty(item.get('qty'))} "
+                f"{plural(item.get('unit'), item.get('qty'))}"
+                for item in order.get("items", [])
+            )
+            sheet.append(
+                [
+                    order.get("created_at"),
+                    venue,
+                    positions,
+                    float(order.get("total") or 0),
+                    order.get("status"),
+                ]
+            )
+        exports = settings.data_dir / "exports"
+        exports.mkdir(parents=True, exist_ok=True)
+        path = exports / f"orders-{now.strftime('%Y%m%d-%H%M%S')}.xlsx"
+        workbook.save(path)
+    except Exception as exc:
+        log.exception("Не удалось собрать Excel")
+        await message.answer(f"Не получилось собрать файл: {type(exc).__name__}")
+        return
+    try:
+        await message.bot.send_document(
+            message.chat.id,
+            FSInputFile(path),
+            caption=f"Заказы за {days} дн. · {len(orders)} шт.",
+        )
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@router.message(Command("price_undo"))
+async def cmd_price_undo(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    versions = await db.list_price_versions(5)
+    if not versions:
+        await message.answer("Сохранённых версий прайса пока нет.")
+        return
+    version = versions[0]
+    path = Path(version["path"])
+    if not path.exists():
+        await message.answer("Файл последней версии не найден.")
+        return
+    try:
+        restored = Catalog.load(path)
+    except Exception:
+        await message.answer("Файл версии повреждён.")
+        return
+    diff = diff_catalogs(restored, catalog)
+    lines = [
+        f"↩️ <b>Вернуть прайс от {esc(version['created_at'])}</b>",
+        "",
+        f"Позиций: {len(catalog.items)} → {len(restored.items)}",
+        f"Изменились цены: {len(diff['price_changes'])}",
+        f"Появятся: {len(diff['added'])}",
+        f"Исчезнут: {len(diff['removed'])}",
+    ]
+    for previous, current in diff["price_changes"][:5]:
+        lines.append(f"{esc(current.name)}: {money(previous.price)} → {money(current.price)}")
+    await message.answer(
+        "\n".join(lines), reply_markup=price_undo_keyboard(int(version["id"]))
+    )
+
+
+@router.message(Command("health"))
+async def cmd_health(
+    message: Message, db: Database, settings: Settings, ai: AIClient
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    uptime = int(time.time() - BOT_STARTED_AT)
+    days, rest = divmod(uptime, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    parts = []
+    if days:
+        parts.append(f"{days} д")
+    if hours or days:
+        parts.append(f"{hours} ч")
+    parts.append(f"{minutes} мин")
+    labels = {
+        "not_configured": "не задан",
+        "ok": "работает",
+        "lazy": "проверю при запросе",
+        "quota": "лимит",
+        "degraded": "сбои",
+        "auth_failed": "ключ отклонён",
+        "unreachable": "недоступен",
+        "unknown": "не проверен",
+    }
+    pending = len(await db.list_unnotified_orders(500))
+    pending_courier = len(await db.list_unnotified_delivery_orders(500))
+    if _last_error["at"]:
+        error_text = (
+            time.strftime("%d.%m %H:%M", time.localtime(_last_error["at"]))
+            + " — "
+            + str(_last_error["text"])
+        )
+    else:
+        error_text = "нет"
+    size = await db.size_bytes()
+    try:
+        db_ms = await db.ping()
+        db_line = f"БД: {'PostgreSQL' if db.is_postgres else 'SQLite'}, ответ {db_ms} мс\n"
+    except Exception:
+        db_line = f"БД: {'PostgreSQL' if db.is_postgres else 'SQLite'}, не отвечает\n"
+    text = (
+        "🩺 <b>Здоровье</b>\n\n"
+        + db_line
+        + f"Аптайм: {', '.join(parts)}\n"
+        f"DeepSeek: {labels.get(ai.deepseek_status, ai.deepseek_status)}\n"
+        f"Gemini: {labels.get(ai.gemini_status, ai.gemini_status)}\n"
+        f"Ждут упаковщика: {pending}\n"
+        f"Ждут доставщика: {pending_courier}\n"
+        f"Последняя ошибка: {error_text}\n"
+        f"Размер БД: {size / 1024 / 1024:.1f} МБ\n"
+        f"Вызовов AI за сутки: DeepSeek {ai.calls_today.get('deepseek', 0)}, "
+        f"Gemini {ai.calls_today.get('gemini', 0)}"
+    )
+    await message.answer(text, reply_markup=manager_back_keyboard())
+
+
+@router.message(Command("order"))
+async def cmd_order(message: Message, command: CommandObject, db: Database, settings: Settings) -> None:
+    if not command.args or not command.args.strip().isdigit():
+        await message.answer("Укажите номер: <code>/order 12</code>")
+        return
+    order = await db.get_order(int(command.args.strip()))
+    if order is None:
+        await message.answer("Заказ не найден.")
+        return
+    is_manager = _is_manager(settings, message.from_user.id, message.chat.id)
+    is_courier = _is_courier(settings, message.from_user.id, message.chat.id)
+    is_owner = order.get("chef_id") == message.from_user.id
+    if not (is_manager or is_courier or is_owner):
+        await message.answer("Нет доступа к этому заказу.")
+        return
+    if is_manager:
+        keyboard = manager_status_keyboard(order["id"], order.get("status"))
+    elif is_courier:
+        keyboard = courier_status_keyboard(
+            order["id"],
+            str(order.get("status")),
+            str(order.get("payment_status") or "unpaid"),
+        )
+    else:
+        keyboard = client_order_keyboard(order["id"])
+    await message.answer(format_order(order, "📦 Заказ"), reply_markup=keyboard)
+
+
+@router.message(Command("last"))
+async def cmd_last(message: Message, db: Database) -> None:
+    order = await db.last_order_for_user(message.from_user.id)
+    if order is None:
+        await message.answer(
+            "У вас пока нет заказов.", reply_markup=client_back_keyboard()
+        )
+        return
+    await message.answer(
+        format_client_order(order, "Последний заказ"),
+        reply_markup=client_order_keyboard(order["id"]),
+    )
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, db: Database, settings: Settings) -> None:
+    await db.set_chat_state(message.chat.id, "qty_input", "")
+    count = await db.cancel_active_drafts(message.chat.id)
+    keyboard = _back_keyboard(settings, message.from_user.id, message.chat.id)
+    if count:
+        await message.answer(
+            "Отменил. Можно прислать новый заказ.",
+            reply_markup=keyboard,
+        )
+    else:
+        await message.answer("Нечего отменять.", reply_markup=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# приём заказа
+# ---------------------------------------------------------------------------
+
+
+# Заказ клиента — отдельный роутер.
+from .handlers_client import (  # noqa: E402
+    _item_from_catalog,
+    _load_draft_for_callback,
+)
+from .handlers_client import router as _client_router  # noqa: E402
+
+router.include_router(_client_router)
+
+@router.callback_query(F.data.startswith("price:apply:"))
+async def cb_price_apply(
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    token = callback.data.split(":", 2)[2]
+    pending = _pending_prices.pop(token, None)
+    if pending is None or time.time() - pending["created"] > 3600:
+        if pending is not None:
+            Path(pending["path"]).unlink(missing_ok=True)
+        await callback.answer("Обновление устарело", show_alert=True)
+        return
+    new_catalog: Catalog = pending["catalog"]
+    path = Path(pending["path"])
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    versions_dir = settings.data_dir / "price_versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    if settings.catalog_path.exists():
+        archive = versions_dir / f"catalog-{stamp}.xlsx"
+        try:
+            shutil.copy2(settings.catalog_path, archive)
+            await db.add_price_version(str(archive), "предыдущая версия", len(catalog.items))
+            for old_path in await db.prune_price_versions(5):
+                try:
+                    Path(old_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except OSError:
+            log.warning("Не удалось сохранить версию прайса")
+        backup_dir = settings.data_dir / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(settings.catalog_path, backup_dir / f"catalog-{stamp}.xlsx")
+    temp = settings.catalog_path.with_suffix(settings.catalog_path.suffix + ".tmp")
+    shutil.copy2(path, temp)
+    os.replace(temp, settings.catalog_path)
+    catalog.items = new_catalog.items
+    catalog.by_id = new_catalog.by_id
+    catalog._phrases = new_catalog._phrases
+    path.unlink(missing_ok=True)
+    log.info("Прайс обновлён вручную: %d позиций", len(catalog.items))
+    try:
+        await callback.message.edit_text(
+            f"Список обновлён: {len(catalog.items)} позиций.\n"
+            "Вернуть прежний: /price_undo",
+            reply_markup=manager_back_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("price:cancel:"))
+async def cb_price_cancel(
+    callback: CallbackQuery, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    token = callback.data.split(":", 2)[2]
+    pending = _pending_prices.pop(token, None)
+    if pending is not None:
+        Path(pending["path"]).unlink(missing_ok=True)
+    try:
+        await callback.message.edit_text(
+            "Оставил прежний список.", reply_markup=manager_back_keyboard()
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отменил")
+
+
+@router.callback_query(F.data.startswith("ost:"))
+async def cb_order_status(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    try:
+        _, order_raw, status = callback.data.split(":")
+        order_id = int(order_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    if status not in ("accepted", "ready", "cancelled"):
+        await callback.answer(
+            "Доставку подтверждает доставщик, а не упаковщик.",
+            show_alert=True,
+        )
+        return
+    if not await _manager_ok(callback, settings):
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("status") in ("done", "cancelled", "failed"):
+        await callback.answer(
+            "Заказ уже закрыт. Статус закрытого заказа не меняется.",
+            show_alert=True,
+        )
+        return
+
+    chef_id = order.get("chef_id")
+    manager = _manager_chat(settings)
+
+    if status == "cancelled":
+        if not await db.update_order_status(order_id, "cancelled"):
+            await callback.answer("Статус уже установлен", show_alert=True)
+            return
+        log.info(
+            "Заказ №%s: отменён упаковщиком id=%s",
+            order_id,
+            callback.from_user.id,
+        )
+        order["status"] = "cancelled"
+        await _close_order_cards(
+            callback.bot, order, f"❌ Заказ №{order_id} отменён", manager
+        )
+        await callback.answer("Отменил")
+        return
+
+    if status == "accepted":
+        if order.get("status") not in ("new", "accepted"):
+            await callback.answer("Заказ уже передан дальше", show_alert=True)
+            return
+        changed = await db.transition_order(
+            order_id, ("new", "accepted"), "accepted"
+        )
+        if not changed and order.get("status") != "accepted":
+            await callback.answer("Статус уже изменён", show_alert=True)
+            return
+        order["status"] = "accepted"
+        try:
+            await callback.message.edit_text(
+                format_order(order, "📦 Заказ"),
+                reply_markup=manager_status_keyboard(order_id, "accepted"),
+            )
+        except TelegramBadRequest:
+            pass
+        if chef_id and chef_id != manager:
+            try:
+                await _send_with_retry(
+                    lambda: callback.bot.send_message(
+                        chef_id, f"📌 Заказ №{order_id} принят в упаковку."
+                    )
+                )
+            except Exception:
+                log.warning("Не удалось уведомить клиента о заказе №%s", order_id)
+        await callback.answer("Принял")
+        return
+
+    # status == "ready": упаковщик собрал заказ и передаёт доставщику.
+    courier = _courier_chat(settings)
+    if courier is None:
+        await callback.answer(
+            "COURIER_CHAT_ID не задан в .env — доставщика нет.", show_alert=True
+        )
+        return
+    if order.get("status") == "ready" and order.get("courier_notified_at"):
+        await callback.answer("Заказ уже у доставщика", show_alert=True)
+        return
+    if order.get("status") not in ("new", "accepted", "ready"):
+        await callback.answer("Заказ уже нельзя передать доставщику", show_alert=True)
+        return
+
+    if not await db.mark_order_ready(order_id, courier):
+        fresh = await db.get_order(order_id)
+        if fresh is None or fresh.get("status") != "ready":
+            await callback.answer("Статус уже изменён", show_alert=True)
+            return
+    order = await db.get_order(order_id)
+    assert order is not None
+    if order.get("chef_id"):
+        profile = await db.get_user(int(order["chef_id"]))
+        if profile and profile.get("venue"):
+            order["venue"] = profile["venue"]
+    try:
+        card_id = await _send_order_card(
+            callback.bot,
+            courier,
+            order,
+            "🚚 Доставка",
+            courier_status_keyboard(
+                order_id, "ready", str(order.get("payment_status") or "unpaid")
+            ),
+        )
+    except Exception:
+        log.exception("Не удалось отправить заказ №%s доставщику", order_id)
+        await callback.answer(
+            "Заказ собран, но доставщик недоступен. Бот повторит отправку.",
+            show_alert=True,
+        )
+        return
+    try:
+        await db.mark_courier_notified(order_id)
+    except Exception:
+        log.warning("Не удалось отметить отправку заказа №%s доставщику", order_id)
+    if card_id:
+        try:
+            await db.set_order_cards(order_id, courier_card=card_id)
+        except Exception:
+            log.warning("Не удалось сохранить карточку доставки №%s", order_id)
+
+    try:
+        await callback.message.edit_text(
+            format_order(order, "📦 Заказ"),
+            reply_markup=manager_status_keyboard(order_id, "ready"),
+        )
+    except TelegramBadRequest:
+        pass
+    if chef_id:
+        try:
+            await _send_with_retry(
+                lambda: callback.bot.send_message(
+                    chef_id,
+                    f"📦 Заказ №{order_id} собран и передан доставщику.",
+                )
+            )
+        except Exception:
+            log.warning("Не удалось уведомить клиента о сборке №%s", order_id)
+    log.info(
+        "Заказ №%s: собран, передан доставщику %s (упаковщик id=%s)",
+        order_id,
+        courier,
+        callback.from_user.id,
+    )
+    await callback.answer("Передал доставщику")
+
+
+@router.callback_query(F.data.startswith("cd:list:"))
+async def cb_courier_list(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        page = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        page = 0
+    text, keyboard = await _courier_page(db, page)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cd:view:"))
+async def cb_courier_view(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        _, _, order_raw, page_raw = callback.data.split(":")
+        order_id = int(order_raw)
+        page = int(page_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if not _courier_order_allowed(order, callback.from_user.id):
+        await callback.answer("Этот заказ у другого доставщика", show_alert=True)
+        return
+    if order.get("status") not in ("ready", "delivering"):
+        await callback.answer("Заказ уже закрыт", show_alert=True)
+        return
+    await _edit_courier_card(
+        callback,
+        order,
+        "🚚 Доставка",
+        courier_status_keyboard(
+            order_id,
+            str(order.get("status")),
+            str(order.get("payment_status") or "unpaid"),
+        ),
+    )
+    await callback.answer()
+
+
+# Панель доставщика — отдельный роутер.
+from .handlers_courier import router as _courier_handlers  # noqa: E402
+
+router.include_router(_courier_handlers)
+
+@router.callback_query(F.data == "mp:panel")
+async def cb_manager_panel(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        await callback.message.edit_text(
+            await _manager_panel_text(db), reply_markup=manager_panel_keyboard()
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+async def _show_manager_list(
+    callback: CallbackQuery, kind: str, page: int, db: Database, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    text, keyboard = await _orders_page(db, kind, page)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mp:inbox:"))
+async def cb_manager_inbox(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    try:
+        page = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        page = 0
+    await _show_manager_list(callback, "inbox", page, db, settings)
+
+
+@router.callback_query(F.data.startswith("mp:history:"))
+async def cb_manager_history(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    try:
+        page = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        page = 0
+    await _show_manager_list(callback, "history", page, db, settings)
+
+
+@router.callback_query(F.data.startswith("mp:view:"))
+async def cb_manager_view(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        _, _, order_raw, kind, page_raw = callback.data.split(":")
+        order_id = int(order_raw)
+        page = int(page_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    if kind not in ("inbox", "history"):
+        kind = "history"
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(
+            format_order(order, "📦 Заказ"),
+            reply_markup=order_detail_keyboard(
+                order_id, kind, page, str(order.get("status"))
+            ),
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cl:price")
+async def cb_client_price(
+    callback: CallbackQuery, catalog: Catalog, settings: Settings
+) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    keyboard = _back_keyboard(
+        settings,
+        callback.from_user.id,
+        callback.message.chat.id,
+    )
+    await _edit_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        format_catalog(catalog),
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cl:last")
+async def cb_client_last(callback: CallbackQuery, db: Database) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    order = await db.last_order_for_user(callback.from_user.id)
+    text = (
+        "У вас пока нет заказов."
+        if order is None
+        else format_client_order(order, "📦 Последний заказ")
+    )
+    await _edit_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        client_back_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cl:menu")
+async def cb_client_menu(
+    callback: CallbackQuery,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    if _is_manager(
+        settings,
+        callback.from_user.id,
+        callback.message.chat.id,
+    ):
+        text = await _manager_panel_text(db)
+        keyboard = manager_panel_keyboard()
+    elif _is_courier(
+        settings,
+        callback.from_user.id,
+        callback.message.chat.id,
+    ):
+        list_text, keyboard = await _courier_page(db, 0)
+        text = await _courier_panel_text(db) + "\n\n" + list_text
+    else:
+        text = START_TEXT
+        usually = await db.usual_items(callback.from_user.id)
+        keyboard = client_menu_keyboard(usually, catalog)
+    await _edit_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cl:help")
+async def cb_client_help(callback: CallbackQuery, settings: Settings) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    if _is_manager(
+        settings,
+        callback.from_user.id,
+        callback.message.chat.id,
+    ):
+        text = MANAGER_HELP_TEXT
+        keyboard = manager_back_keyboard()
+    elif _is_courier(
+        settings,
+        callback.from_user.id,
+        callback.message.chat.id,
+    ):
+        text = COURIER_HELP_TEXT
+        keyboard = courier_back_keyboard()
+    else:
+        text = HELP_TEXT
+        keyboard = client_back_keyboard()
+    await _edit_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editok:"))
+async def cb_edit_ok(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    choice = callback.data.split(":", 1)[1]
+    raw = await db.get_chat_state(callback.message.chat.id, "edit")
+    await db.set_chat_state(callback.message.chat.id, "edit", "")
+    if choice != "yes" or not raw:
+        try:
+            await callback.message.edit_text("Оставил как было.", reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Хорошо")
+        return
+    try:
+        data = json.loads(raw)
+        order_id = int(data["order_id"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        await callback.answer("Правка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or order.get("status") != "new":
+        await callback.answer("Заказ уже нельзя поправить", show_alert=True)
+        return
+    await db.replace_order_items(order_id, data["items"], data["total"])
+    updated = await db.get_order(order_id)
+    assert updated is not None
+    manager = order.get("manager_chat_id") or _manager_chat(settings)
+    if manager and order.get("manager_card_message_id"):
+        try:
+            await callback.bot.edit_message_text(
+                chat_id=manager,
+                message_id=int(order["manager_card_message_id"]),
+                text=format_order(updated, "📦 Заказ (изменён)"),
+                reply_markup=manager_status_keyboard(order_id, "new"),
+            )
+        except Exception:
+            log.warning("Не удалось обновить карточку заказа №%s", order_id)
+    if manager:
+        try:
+            await callback.bot.send_message(
+                manager, f"✏️ Повар изменил заказ №{order_id}"
+            )
+        except Exception:
+            log.warning("Не удалось уведомить менеджера об изменении заказа")
+    summary = items_summary(data["items"])
+    text = f"✅ Заказ №{order_id} обновлён\n\n{summary}\n\n💰 <b>Итого: ${data['total']:,.2f}</b>"
+    try:
+        await callback.message.edit_text(text, reply_markup=client_order_keyboard(order_id))
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Обновил")
+
+
+@router.callback_query(F.data.startswith("unit:"))
+async def cb_unit(
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    try:
+        _, draft_id, idx_raw, code = callback.data.split(":")
+        idx = int(idx_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    draft = await _load_draft_for_callback(callback, draft_id, db)
+    if draft is None:
+        return
+    item = next((i for i in draft["items"] if i["idx"] == idx), None)
+    if item is None:
+        await callback.answer("Не нашёл позицию", show_alert=True)
+        return
+    _apply_unit_choice(item, code, catalog)
+    await db.save_draft(draft)
+    if item.get("catalog_id") is not None:
+        await db.set_chat_state(
+            draft["user_id"], f"unit_habit:{item['catalog_id']}", code
+        )
+    await callback.answer("Запомнил")
+    await _advance_draft(
+        callback.bot,
+        db,
+        settings,
+        catalog,
+        draft,
+        callback.message.chat.id,
+        callback.message.message_id,
+    )
+
+
+@router.callback_query(F.data.startswith("slot:"))
+async def cb_slot(
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    try:
+        _, draft_id, idx_raw = callback.data.split(":")
+        idx = int(idx_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    draft = await _load_draft_for_callback(callback, draft_id, db)
+    if draft is None:
+        return
+    slots = parse_slots(await db.get_setting("delivery_slots"))
+    if not 0 <= idx < len(slots):
+        await callback.answer("Этот интервал больше недоступен", show_alert=True)
+        return
+    start, end = slots[idx]
+    draft["delivery_time"] = start
+    draft["delivery_slot"] = f"{start}-{end}"
+    await db.save_draft(draft)
+    await callback.answer(f"Доставим {start}–{end}")
+    await _advance_draft(
+        callback.bot,
+        db,
+        settings,
+        catalog,
+        draft,
+        callback.message.chat.id,
+        callback.message.message_id,
+    )
+
+
+@router.callback_query(F.data.startswith("alt:"))
+async def cb_alt(
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    try:
+        _, draft_id, idx_raw, cid_raw = callback.data.split(":")
+        idx, catalog_id = int(idx_raw), int(cid_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    draft = await _load_draft_for_callback(callback, draft_id, db)
+    if draft is None:
+        return
+    catalog_item = catalog.get(catalog_id)
+    if catalog_item is None:
+        await callback.answer("Такого нет в списке", show_alert=True)
+        return
+    item = next((i for i in draft["items"] if i["idx"] == idx), None)
+    if item is None:
+        await callback.answer("Не нашёл позицию", show_alert=True)
+        return
+    qty = item.get("qty")
+    replacement = _item_from_catalog(catalog_item, qty, item.get("unit"))
+    replacement["idx"] = idx
+    draft["items"] = [
+        replacement if i["idx"] == idx else i for i in draft["items"]
+    ]
+    await db.save_draft(draft)
+    await callback.answer("Заменил")
+    await _advance_draft(
+        callback.bot,
+        db,
+        settings,
+        catalog,
+        draft,
+        callback.message.chat.id,
+        callback.message.message_id,
+    )
+
+
+@router.callback_query(F.data.startswith("shift:"))
+async def cb_shift(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    try:
+        _, action, order_raw = callback.data.split(":")
+        order_id = int(order_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    if action == "yes":
+        await callback.answer("Хорошо")
+        return
+    await db.set_setting(
+        f"date_input:{callback.message.chat.id}",
+        json.dumps({"order_id": order_id}),
+    )
+    try:
+        await callback.message.edit_text(
+            "Напишите дату, например: 12.11 или «в пятницу»."
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("acc:"))
+async def cb_access(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        _, action, user_raw = callback.data.split(":")
+        user_id = int(user_raw)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    access = "approved" if action == "ok" else "rejected"
+    await db.set_user_access(user_id, access)
+    try:
+        await callback.bot.send_message(
+            user_id,
+            "✅ Доступ подтверждён. Можете присылать заказы."
+            if access == "approved"
+            else "Доступ отклонён. Напишите менеджеру.",
+        )
+    except Exception:
+        log.warning("Не удалось сообщить повару %s о доступе", user_id)
+    try:
+        await callback.message.edit_text(
+            f"Доступ {'подтверждён' if access == 'approved' else 'отклонён'}."
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("rday:"))
+async def cb_reminder(
+    callback: CallbackQuery,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    if callback.message is None:
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    try:
+        _, action, _user_raw = callback.data.split(":")
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    if action == "off":
+        await db.set_chat_state(callback.from_user.id, "remind_off", "1")
+        try:
+            await callback.message.edit_text("Больше не напоминаю.", reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Хорошо")
+        return
+    if action == "no":
+        try:
+            await callback.message.edit_text("Хорошо, жду заказ.", reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.answer()
+        return
+    usual = await db.usual_items(callback.from_user.id)
+    if not usual:
+        await callback.answer("Нет истории заказов", show_alert=True)
+        return
+    tomorrow = datetime.now(settings.timezone).date() + timedelta(days=1)
+    from .drafts import _base_item
+
+    items = []
+    for entry in usual:
+        catalog_item = catalog.get(entry["catalog_id"])
+        if catalog_item is None:
+            continue
+        item = _base_item(catalog_item.name, entry["qty"], entry["unit"])
+        apply_catalog(item, catalog_item)
+        item["status"] = "ok"
+        items.append(item)
+    if not items:
+        await callback.answer("Нет знакомых позиций", show_alert=True)
+        return
+    for index, item in enumerate(items):
+        item["idx"] = index
+    draft = {
+        "id": secrets.token_hex(4),
+        "chat_id": callback.message.chat.id,
+        "user_id": callback.from_user.id,
+        "user_name": callback.from_user.full_name,
+        "username": callback.from_user.username,
+        "raw_text": None,
+        "transcript": None,
+        "source": "reminder",
+        "provider": "reminder",
+        "delivery_date": tomorrow.isoformat(),
+        "delivery_time": None,
+        "comment": "",
+        "items": items,
+        "summary_sent": False,
+        "questions": 0,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "draft",
+    }
+    await db.cancel_active_drafts(callback.message.chat.id)
+    await db.create_draft(draft)
+    try:
+        await callback.message.edit_text("Собираю как обычно…", reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    panel = await callback.message.answer("Собираю как обычно…")
+    await callback.answer()
+    await _advance_draft(
+        callback.bot, db, settings, catalog, draft, panel.chat.id, panel.message_id
+    )
+
+
+@router.callback_query(F.data.startswith("pundo:"))
+async def cb_price_undo(
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    value = callback.data.split(":", 1)[1]
+    if value == "no":
+        try:
+            await callback.message.edit_text("Оставил текущий прайс.", reply_markup=manager_back_keyboard())
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Отмена")
+        return
+    try:
+        version_id = int(value)
+    except ValueError:
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    version = await db.get_price_version(version_id)
+    if version is None or not Path(version["path"]).exists():
+        await callback.answer("Файл версии не найден", show_alert=True)
+        return
+    try:
+        restored = Catalog.load(version["path"])
+    except Exception:
+        await callback.answer("Файл версии повреждён", show_alert=True)
+        return
+    diff = diff_catalogs(catalog, restored)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = settings.data_dir / "price_versions"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    current_copy = backup_dir / f"catalog-{stamp}.xlsx"
+    try:
+        shutil.copy2(settings.catalog_path, current_copy)
+    except OSError:
+        current_copy = Path(version["path"])
+    temp = settings.catalog_path.with_suffix(settings.catalog_path.suffix + ".tmp")
+    shutil.copy2(version["path"], temp)
+    os.replace(temp, settings.catalog_path)
+    catalog.items = restored.items
+    catalog.by_id = restored.by_id
+    catalog._phrases = restored._phrases
+    # Сохраняем текущий (до отката) прайс, чтобы откат тоже можно было отменить.
+    await db.add_price_version(str(current_copy), "предыдущая версия", diff["old_count"])
+    removed_files = await db.prune_price_versions(5)
+    for path in removed_files:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    text = (
+        "↩️ Прайс возвращён к версии от "
+        f"{esc(version['created_at'])}\n"
+        f"Позиций: {diff['new_count']}"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=manager_back_keyboard())
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Вернул")
+
+
+# ---------------------------------------------------------------------------
+# Оплата USDT в сети TON на месте доставки
+# ---------------------------------------------------------------------------
+from .tonflow import (
+    _usdt_paid_notifications,
+    poll_ton_payments,
+    send_ton_invoice,
+    ton_client,
+)
+
+@router.callback_query(F.data.startswith("cour:arrive:"))
+async def cb_courier_arrive(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Доставщик нажал «Прибыл» — выставляем счёт USDT."""
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        order_id = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or not _courier_order_allowed(order, callback.from_user.id):
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("payment_status") == "paid":
+        await callback.answer("Заказ уже оплачен", show_alert=True)
+        return
+    if order.get("status") != "delivering":
+        await callback.answer("Сначала нажмите «Выехал к клиенту»", show_alert=True)
+        return
+    if ton_client(settings) is None:
+        await callback.answer("Оплата USDT не настроена", show_alert=True)
+        return
+    if await send_ton_invoice(callback.bot, db, settings, order):
+        await callback.answer("Счёт отправлен")
+    else:
+        await callback.answer("Не удалось выставить счёт", show_alert=True)
+
+
+@router.message(Command("pay"))
+async def cmd_manual_payment(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Ручной зачёт USDT-платежа: /pay <номер заказа> <tx hash>."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").split()
+    if len(parts) < 2 or not parts[0].isdigit():
+        await message.answer(
+            "Формат: <code>/pay 12 tx_hash</code>\n"
+            "Хеш транзакции — из обозревателя TON."
+        )
+        return
+    order_id, tx_hash = int(parts[0]), parts[1].strip()
+    order = await db.get_order(order_id)
+    if order is None:
+        await message.answer("Заказ не найден.")
+        return
+    if order.get("payment_status") == "paid":
+        await message.answer("Заказ уже оплачен.")
+        return
+    if len(tx_hash) < 20:
+        await message.answer("Хеш выглядит слишком коротким.")
+        return
+    if await db.ton_tx_used(tx_hash):
+        await message.answer("Этот платёж уже засчитан.")
+        return
+    amount_nano = usdt_to_nano(float(order.get("total") or 0))
+    await db.credit_ton_payment(order_id, tx_hash, amount_nano)
+    if not await db.mark_order_paid(order_id, "usdt", amount_nano / 1_000_000):
+        await message.answer(
+            "Платёж записан, но статус заказа не изменился: он уже закрыт или оплачен."
+        )
+        return
+    fresh = await db.get_order(order_id) or order
+    await message.answer(
+        f"✅ Заказ №{order_id}: платёж засчитан вручную ({nano_to_text(amount_nano)} USDT)."
+    )
+    await _usdt_paid_notifications(
+        message.bot, db, settings, fresh, amount_nano, late=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# G1: довес на сборке
+# ---------------------------------------------------------------------------
+def _parse_amount(text: str) -> float | None:
+    raw = (text or "").replace(",", ".").replace(" ", "").replace("$", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value <= 0 or value > 1_000_000:
+        return None
+    return round(value, 2)
+
+
+async def _handle_weigh(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    """Ловит число, если упаковщик только что нажал «Довес»."""
+    chat_id = message.chat.id
+    state = "weigh"
+    raw_order = await db.get_chat_state(chat_id, state)
+    if not raw_order:
+        return False
+    await db.set_chat_state(chat_id, state, "")
+    order = await db.get_order(int(raw_order))
+    if order is None:
+        return False
+    amount = _parse_amount(text)
+    if amount is None:
+        await message.answer(
+            "Не понял сумму. Пришлите число, например <code>1250.50</code>."
+        )
+        await db.set_chat_state(chat_id, state, str(raw_order))
+        return True
+    old_total = float(order.get("total") or 0)
+    if abs(amount - old_total) < 0.005:
+        await message.answer("Сумма не изменилась — оставил как было.")
+        return True
+    prev_total = await db.update_order_total(int(order["id"]), amount)
+    if prev_total is None:
+        await message.answer(
+            f"Заказ №{order['id']} уже закрыт — сумму не меняю."
+        )
+        return True
+    order["total"] = amount
+    log.info(
+        "Довес: заказ №%s %.2f -> %.2f (упаковщик id=%s)",
+        order["id"],
+        old_total,
+        amount,
+        message.from_user.id,
+    )
+    await message.answer(
+        f"⚖️ Итог заказа №{order['id']} обновлён: "
+        f"{money(old_total)} → <b>{money(amount)}</b>. Клиент получил запрос на подтверждение."
+    )
+    chef_id = order.get("chef_id")
+    if chef_id:
+        try:
+            await message.bot.send_message(
+                int(chef_id),
+                f"⚖️ <b>Итог заказа №{order['id']} изменился</b>\n\n"
+                f"Было: {money(old_total)}\n"
+                f"Стало: <b>{money(amount)}</b>\n\n"
+                "Причина — фактический вес при сборке. Подтвердите, пожалуйста.",
+                reply_markup=weigh_confirm_keyboard(int(order["id"])),
+            )
+        except Exception:
+            log.warning("Довес: не удалось уведомить клиента №%s", order["id"])
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager:
+        try:
+            await message.bot.send_message(
+                int(manager),
+                f"⚖️ Заказ №{order['id']}: довес {money(old_total)} → {money(amount)}, "
+                "ждём подтверждения клиента.",
+            )
+        except Exception:
+            pass
+    return True
+
+
+@router.callback_query(F.data.startswith("wgh:"))
+async def cb_weigh(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        order_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("status") in ("done", "cancelled", "failed"):
+        await callback.answer("Заказ уже закрыт", show_alert=True)
+        return
+    await db.set_chat_state(callback.message.chat.id, "weigh", str(order_id))
+    await callback.message.answer(
+        f"⚖️ Заказ №{order_id}. Текущий итог: {money(order.get('total'))}.\n"
+        "Пришлите фактическую сумму числом, например <code>1250.50</code>."
+    )
+    await callback.answer("Жду сумму")
+
+
+@router.callback_query(F.data.startswith("wacc:"))
+async def cb_weigh_accept(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    order_id = int(callback.data.split(":")[1])
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                f"✅ Клиент подтвердил довес по заказу №{order_id} "
+                f"({money(order.get('total'))}).",
+            )
+        except Exception:
+            pass
+    await callback.answer("Спасибо, подтверждено")
+    await callback.message.answer("✅ Спасибо, итог подтверждён.")
+
+
+@router.callback_query(F.data.startswith("wdis:"))
+async def cb_weigh_dispute(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    order_id = int(callback.data.split(":")[1])
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                f"⚠️ Клиент НЕ согласен с довесом по заказу №{order_id} "
+                f"({money(order.get('total'))}). Свяжитесь с клиентом.",
+            )
+        except Exception:
+            pass
+    await callback.answer("Передал упаковщику")
+    await callback.message.answer(
+        "Понял, передал упаковщику. Он свяжется с вами."
+    )
+
+
+# ---------------------------------------------------------------------------
+# E9: PIN при вручении, E10: оценка, E6: телефон и адрес кнопками
+# ---------------------------------------------------------------------------
+async def _handle_delivery_pin(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    """Курьер присылает код, который называет клиент."""
+    chat_id = message.chat.id
+    state = "pinwait"
+    raw_order = await db.get_chat_state(chat_id, state)
+    if not raw_order:
+        return False
+    if not _is_courier(settings, message.from_user.id, message.chat.id):
+        return False
+    order = await db.get_order(int(raw_order))
+    if order is None:
+        await db.set_chat_state(chat_id, state, "")
+        return False
+    digits = re.sub(r"\D", "", text or "")
+    if digits != str(order.get("delivery_pin") or ""):
+        await message.answer(
+            "Код не совпал. Спросите у клиента ещё раз — или нажмите «Доставлено» заново."
+        )
+        return True
+    await db.set_chat_state(chat_id, state, "")
+    await db.set_chat_state(order['id'], "pinok", "1")
+    await message.answer("✅ Код верный. Нажмите «Доставлено».")
+    return True
+
+
+@router.callback_query(F.data.startswith("rate:"))
+async def cb_rate(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    try:
+        _, raw_order, raw_value = callback.data.split(":")
+        order_id, value = int(raw_order), int(raw_value)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    if not 1 <= value <= 5:
+        await callback.answer("Оценка от 1 до 5", show_alert=True)
+        return
+    await db.set_order_rating(order_id, value)
+    try:
+        await callback.message.edit_text(f"Спасибо за оценку: {'⭐' * value}")
+    except TelegramBadRequest:
+        pass
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager), f"⭐ Заказ №{order_id}: оценка клиента {value}/5"
+            )
+        except Exception:
+            log.debug("Не удалось отправить оценку менеджеру")
+    await callback.answer("Спасибо!")
+
+
+@router.message(F.contact)
+async def on_contact(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    state = await db.get_chat_state(message.chat.id, "onboard")
+    if state != "phone" or message.contact is None:
+        return
+    if message.contact.user_id and message.contact.user_id != message.from_user.id:
+        await message.answer("Нужен ваш собственный номер — пришлите свою карточку.")
+        return
+    phone = message.contact.phone_number
+    await db.ensure_user(
+        message.from_user.id, message.from_user.full_name, message.from_user.username
+    )
+    await db.set_user_phone(message.from_user.id, phone)
+    await message.answer(f"📞 Записал: {phone}")
+    await _ask_address(message, db)
+
+
+@router.message(F.location)
+async def on_location(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    state = await db.get_chat_state(message.chat.id, "onboard")
+    if state != "address" or message.location is None:
+        return
+    address = f"📍 {message.location.latitude:.6f}, {message.location.longitude:.6f}"
+    await db.ensure_user(
+        message.from_user.id, message.from_user.full_name, message.from_user.username
+    )
+    await db.set_user_address(message.from_user.id, address)
+    user = await db.get_user(message.from_user.id) or {}
+    await _finish_profile(message, db, settings, catalog, user)
+
+
+# ---------------------------------------------------------------------------
+# H5: кассовая сверка — курьер вводит фактическую сумму наличных
+# ---------------------------------------------------------------------------
+async def _handle_cash_amount(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    chat_id = message.chat.id
+    state = "cashwait"
+    raw_order = await db.get_chat_state(chat_id, state)
+    if not raw_order:
+        return False
+    if not _is_courier(settings, message.from_user.id, message.chat.id):
+        return False
+    order = await db.get_order(int(raw_order))
+    if order is None:
+        await db.set_chat_state(chat_id, state, "")
+        return False
+    amount = _parse_amount(text)
+    if amount is None:
+        await message.answer(
+            "Не понял сумму. Пришлите число, например <code>450</code>."
+        )
+        return True
+    await db.set_chat_state(chat_id, state, "")
+    if not await db.mark_order_paid(int(order["id"]), "cash", amount):
+        await message.answer("Не удалось отметить оплату: заказ уже закрыт.")
+        return True
+    expected = float(order.get("total") or 0)
+    fresh = await db.get_order(int(order["id"])) or order
+    fresh["payment_status"] = "paid"
+    fresh["paid_amount"] = amount
+    if fresh.get("chef_id"):
+        try:
+            await message.bot.send_message(
+                int(fresh["chef_id"]),
+                f"💵 Оплата по заказу №{order['id']} получена: {money(amount)}. Спасибо!",
+            )
+        except Exception:
+            log.debug("Не удалось подтвердить оплату клиенту")
+    courier_chat = fresh.get("courier_chat_id")
+    card_id = fresh.get("courier_card_message_id")
+    if courier_chat and card_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=int(courier_chat),
+                message_id=int(card_id),
+                text=format_order(fresh, "🚚 Доставка"),
+                reply_markup=courier_status_keyboard(int(order["id"]), "delivering", "paid"),
+            )
+        except Exception:
+            log.debug("Не удалось обновить карточку доставщика")
+    if abs(amount - expected) > 0.01:
+        manager = order.get("manager_chat_id") or settings.manager_chat_id
+        if manager:
+            try:
+                await message.bot.send_message(
+                    int(manager),
+                    f"⚠️ Касса: заказ №{order['id']} — ожидалось {money(expected)}, "
+                    f"курьер получил {money(amount)} (расхождение {money(amount - expected)}).",
+                )
+            except Exception:
+                pass
+        await message.answer(
+            f"💵 Записал {money(amount)}. Расхождение с заказом: {money(amount - expected)}."
+        )
+    else:
+        await message.answer(f"💵 Записал {money(amount)}. Сходится.")
+    return True
+
+
+@router.message(Command("cash"))
+async def cmd_cash(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from datetime import date as _date
+
+    day = _date.today().isoformat()
+    report = await db.cash_report(day)
+    lines = [f"💵 <b>Касса за {day}</b>", ""]
+    lines.append(f"Заказов наличными: <b>{len(report['orders'])}</b>")
+    lines.append(f"Ожидалось: <b>{money(report['expected'])}</b>")
+    lines.append(f"Получено: <b>{money(report['received'])}</b>")
+    delta = report["received"] - report["expected"]
+    lines.append(f"Расхождение: <b>{money(delta)}</b>")
+    if report["diff"]:
+        lines.append("")
+        lines.append("<b>Расхождения по заказам</b>")
+        for row in report["diff"]:
+            lines.append(
+                f"• №{row['id']} {esc(row.get('chef_name') or '')}: "
+                f"{money(row.get('total'))} → {money(row.get('paid_amount'))}"
+            )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("staff"))
+async def cmd_staff(message: Message, db: Database, settings: Settings) -> None:
+    """Список сотрудников."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    rows = await db.list_staff()
+    if not rows:
+        await message.answer(
+            "Сотрудников в таблице нет. Основные роли берутся из .env.\n"
+            "Добавить: <code>/staff_add 123456789 courier Имя</code>"
+        )
+        return
+    lines = ["👥 <b>Сотрудники</b>", ""]
+    for row in rows:
+        role = "упаковщик" if row["role"] == "manager" else "курьер"
+        lines.append(f"• {esc(row.get('name') or '')} — {role}, id <code>{row['user_id']}</code>")
+    lines.append("\nУдалить: <code>/staff_del id</code>")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("staff_add"))
+async def cmd_staff_add(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").split(maxsplit=2)
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit() or parts[1] not in ("manager", "courier"):
+        await message.answer(
+            "Формат: <code>/staff_add 123456789 courier Имя</code>\n"
+            "Роль: manager (упаковщик) или courier (доставщик)."
+        )
+        return
+    user_id = int(parts[0])
+    role = parts[1]
+    name = parts[2] if len(parts) > 2 else ""
+    await db.add_staff(user_id, role, name)
+    await load_staff_from_db(db)
+    await message.answer(f"✅ Добавлен: {role}, id <code>{user_id}</code>.")
+
+
+@router.message(Command("staff_del"))
+async def cmd_staff_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("Формат: <code>/staff_del 123456789</code>")
+        return
+    removed = await db.remove_staff(int(raw))
+    await load_staff_from_db(db)
+    await message.answer("Удалён." if removed else "Такого сотрудника нет.")
+
+
+# ---------------------------------------------------------------------------
+# H4: фото подтверждения (ответом на карточку заказа)
+# ---------------------------------------------------------------------------
+@router.message(F.photo)
+async def on_photo(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    ai: AIClient,
+) -> None:
+    if not _is_staff(settings, message.from_user.id, message.chat.id):
+        await _photo_order(message, db, settings, catalog, ai)
+        return
+    receipt_order = await db.get_chat_state(message.chat.id, "receipt")
+    if receipt_order:
+        await db.set_chat_state(message.chat.id, "receipt", "")
+        order = await db.get_order(int(receipt_order))
+        if order is not None:
+            photo = message.photo[-1]
+            await db.set_order_photo(int(order["id"]), photo.file_id)
+            await db.mark_order_paid(
+                int(order["id"]), "transfer", float(order.get("total") or 0)
+            )
+            fresh = await db.get_order(int(order["id"])) or order
+            manager = order.get("manager_chat_id") or settings.manager_chat_id
+            if manager:
+                try:
+                    await message.bot.send_photo(
+                        int(manager),
+                        photo.file_id,
+                        caption=f"🏦 Чек по заказу №{order['id']} — перевод зафиксирован.",
+                    )
+                except Exception:
+                    pass
+            await message.answer(
+                f"🏦 Чек принят, заказ №{order['id']} отмечен оплаченным."
+            )
+            return
+    reply = message.reply_to_message
+    if reply is None:
+        await message.answer(
+            "Ответьте этим фото на карточку заказа — тогда пойму, к какому заказу его приложить."
+        )
+        return
+    order = await db.order_by_card(reply.message_id)
+    if order is None:
+        await message.answer("Не нашёл заказ по этой карточке.")
+        return
+    photo = message.photo[-1]
+    await db.set_order_photo(int(order["id"]), photo.file_id)
+    await message.answer(f"📷 Фото приложено к заказу №{order['id']}.")
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager and int(manager) != message.chat.id:
+        try:
+            await message.bot.send_photo(
+                int(manager),
+                photo.file_id,
+                caption=f"📷 Фото по заказу №{order['id']}",
+            )
+        except Exception:
+            pass
+
+
+@router.message(Command("rate"))
+async def cmd_rate(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Курс местной валюты: /rate 3.5 — или /rate 0, чтобы выключить."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").replace(",", ".").strip()
+    if not raw:
+        current = await db.get_setting("usd_rate", "0")
+        await message.answer(
+            f"Текущий курс: <b>{current}</b> {LOCAL_CURRENCY} за 1 USD.\n"
+            "Изменить: <code>/rate 3.5</code>, выключить: <code>/rate 0</code>."
+        )
+        return
+    try:
+        rate = float(raw)
+    except ValueError:
+        await message.answer("Нужно число, например <code>/rate 3.5</code>.")
+        return
+    if rate < 0 or rate > 100000:
+        await message.answer("Курс вне разумных пределов.")
+        return
+    await db.set_setting("usd_rate", str(rate))
+    set_local_rate(rate, LOCAL_CURRENCY)
+    await message.answer(
+        "Курс выключен." if rate <= 0 else f"Курс обновлён: 1 USD = {rate} {LOCAL_CURRENCY}."
+    )
+
+
+@router.callback_query(F.data.startswith("cour:transfer:"))
+async def cb_courier_transfer(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        order_id = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or not _courier_order_allowed(order, callback.from_user.id):
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("payment_status") == "paid":
+        await callback.answer("Заказ уже оплачен", show_alert=True)
+        return
+    await db.set_chat_state(callback.message.chat.id, "receipt", str(order_id))
+    await callback.message.answer(
+        f"🏦 Заказ №{order_id} на {money(order.get('total'))}. "
+        "Пришлите фото чека — отмечу оплату переводом."
+    )
+    await callback.answer("Жду фото чека")
+
+
+@router.callback_query(F.data.startswith("prob:"))
+async def cb_problem(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    try:
+        order_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    await db.set_chat_state(callback.message.chat.id, "claim", str(order_id))
+    await callback.answer()
+    await callback.message.answer(
+        "⚠️ Опишите проблему одним сообщением: что не так с заказом. "
+        "Мы свяжемся и решим."
+    )
+
+
+async def _handle_claim(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    chat_id = message.chat.id
+    state = "claim"
+    raw_order = await db.get_chat_state(chat_id, state)
+    if not raw_order:
+        return False
+    await db.set_chat_state(chat_id, state, "")
+    order = await db.get_order(int(raw_order))
+    if order is None:
+        return False
+    claim_id = await db.add_claim(
+        int(order["id"]), message.from_user.id, text
+    )
+    await message.answer(
+        f"Принял обращение №{claim_id} по заказу №{order['id']}. "
+        "Менеджер свяжется с вами."
+    )
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager:
+        try:
+            await message.bot.send_message(
+                int(manager),
+                f"⚠️ Претензия №{claim_id} по заказу №{order['id']} "
+                f"от {esc(order.get('chef_name') or '')}:\n{esc(text[:800])}",
+            )
+        except Exception:
+            pass
+    log.info("Претензия №%s по заказу №%s", claim_id, order["id"])
+    return True
+
+
+# Отчёты и деньги — отдельный роутер.
+async def _photo_order(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    ai: AIClient,
+) -> None:
+    """Клиент прислал фото списка — распознаём и разбираем как заказ."""
+    from io import BytesIO
+
+    photo = message.photo[-1]
+    status = await message.answer("📷 Смотрю фото…")
+    buffer = BytesIO()
+    try:
+        await message.bot.download(photo, destination=buffer)
+    except Exception:
+        await status.edit_text("Не удалось скачать фото. Пришлите ещё раз.")
+        return
+    data = buffer.getvalue()
+    if len(data) > 8 * 1024 * 1024:
+        await status.edit_text("Фото слишком большое. Пришлите поменьше.")
+        return
+    text = await ai.recognize_image(data, "image/jpeg")
+    if not text:
+        await status.edit_text(
+            "Не получилось распознать список. Напишите заказ текстом или голосом."
+        )
+        return
+    if message.caption:
+        text = f"{text}\n{message.caption}"
+    await status.edit_text(
+        f"📷 <i>Прочитал:</i> {esc(text[:400])}\n\nСобираю заказ…"
+    )
+    await _process_order(message, text, "photo", None, db, settings, catalog, ai)
+
+
+# ---------------------------------------------------------------------------
+# I5: правка цены прямо из чата
+# ---------------------------------------------------------------------------
+
+
+from .handlers_reports import router as _reports_router  # noqa: E402
+
+router.include_router(_reports_router)
+
+# Широкие обработчики подключаются последними.
+from .handlers_tail import router as _tail_router  # noqa: E402
+
+router.include_router(_tail_router)

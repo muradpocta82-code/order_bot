@@ -1,0 +1,10 @@
+.env
+venv/
+__pycache__/
+*.pyc
+data/
+logs/
+models/
+*.dump
+*.dump.part
+catalog_full_backup.xlsx

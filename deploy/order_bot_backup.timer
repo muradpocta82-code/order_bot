@@ -1,0 +1,10 @@
+[Unit]
+Description=Order bot: часовой бэкап базы
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

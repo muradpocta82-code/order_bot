@@ -1,0 +1,100 @@
+{"id": 1, "phrase": "бекон коробку, завтра к 10:00", "delivery_date": "2026-11-04", "items": [{"catalog_id": 1, "qty": 1, "unit": "коробка"}]}
+{"id": 2, "phrase": "две коробки бекона на послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 1, "qty": 2, "unit": "коробка"}]}
+{"id": 3, "phrase": "привезите бекон с/к 3 коробки, 6 ноября к 9:00", "delivery_date": "2026-11-06", "items": [{"catalog_id": 1, "qty": 3, "unit": "коробка"}]}
+{"id": 4, "phrase": "моцареллы два пакета, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 2, "qty": 2, "unit": "пакет"}]}
+{"id": 5, "phrase": "5 упаковок моцареллы завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 2, "qty": 5, "unit": "пакет"}]}
+{"id": 6, "phrase": "моцарелла 45% 1 пакет, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 2, "qty": 1, "unit": "пакет"}]}
+{"id": 7, "phrase": "сметану двадцатку пять штук, завтра к десяти", "delivery_date": "2026-11-04", "items": [{"catalog_id": 3, "qty": 5, "unit": "ведро"}]}
+{"id": 8, "phrase": "сметана 20% 2 ведра, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 3, "qty": 2, "unit": "ведро"}]}
+{"id": 9, "phrase": "3 штуки сметаны, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 3, "qty": 3, "unit": "ведро"}]}
+{"id": 10, "phrase": "куриного филе 4 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 4, "unit": "кг"}]}
+{"id": 11, "phrase": "филе куриное 2,5 кг на сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 2.5, "unit": "кг"}]}
+{"id": 12, "phrase": "куриная грудка 6 кг, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 6, "unit": "кг"}]}
+{"id": 13, "phrase": "куриные бёдра 5 кг, завтра к 11:00", "delivery_date": "2026-11-04", "items": [{"catalog_id": 5, "qty": 5, "unit": "кг"}]}
+{"id": 14, "phrase": "окорочка 3 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 5, "qty": 3, "unit": "кг"}]}
+{"id": 15, "phrase": "бёдра куриные 1,5 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 5, "qty": 1.5, "unit": "кг"}]}
+{"id": 16, "phrase": "сыр гауда 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 6, "qty": 2, "unit": "кг"}]}
+{"id": 17, "phrase": "гауда 45% 3 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 6, "qty": 3, "unit": "кг"}]}
+{"id": 18, "phrase": "сыра гауда 1,5 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 6, "qty": 1.5, "unit": "кг"}]}
+{"id": 19, "phrase": "пармезан 1 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 7, "qty": 1, "unit": "кг"}]}
+{"id": 20, "phrase": "сыр пармезан 2,5 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 7, "qty": 2.5, "unit": "кг"}]}
+{"id": 21, "phrase": "пармиджано 0,5 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 7, "qty": 0.5, "unit": "кг"}]}
+{"id": 22, "phrase": "сливки 33% 2 л, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 8, "qty": 2, "unit": "л"}]}
+{"id": 23, "phrase": "сливки для взбивания 1 л, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 8, "qty": 1, "unit": "л"}]}
+{"id": 24, "phrase": "3 литра сливок, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 8, "qty": 3, "unit": "л"}]}
+{"id": 25, "phrase": "молоко 3,2% 10 л, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 9, "qty": 10, "unit": "л"}]}
+{"id": 26, "phrase": "молока 5 литров, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 9, "qty": 5, "unit": "л"}]}
+{"id": 27, "phrase": "молоко пастеризованное 20 л, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 9, "qty": 20, "unit": "л"}]}
+{"id": 28, "phrase": "масло сливочное 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 10, "qty": 2, "unit": "кг"}]}
+{"id": 29, "phrase": "сливочное масло 1,5 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 10, "qty": 1.5, "unit": "кг"}]}
+{"id": 30, "phrase": "масло 82,5% 3 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 10, "qty": 3, "unit": "кг"}]}
+{"id": 31, "phrase": "томаты 5 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 11, "qty": 5, "unit": "кг"}]}
+{"id": 32, "phrase": "помидоры 3 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 11, "qty": 3, "unit": "кг"}]}
+{"id": 33, "phrase": "томатов сливовидных 2,5 кг, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 11, "qty": 2.5, "unit": "кг"}]}
+{"id": 34, "phrase": "огурцы 4 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 12, "qty": 4, "unit": "кг"}]}
+{"id": 35, "phrase": "огурцов гладких 2 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 12, "qty": 2, "unit": "кг"}]}
+{"id": 36, "phrase": "огурец 1,5 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 12, "qty": 1.5, "unit": "кг"}]}
+{"id": 37, "phrase": "лук репчатый 3 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 13, "qty": 3, "unit": "кг"}]}
+{"id": 38, "phrase": "лучок 2 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 13, "qty": 2, "unit": "кг"}]}
+{"id": 39, "phrase": "лука белого 5 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 13, "qty": 5, "unit": "кг"}]}
+{"id": 40, "phrase": "картофель 10 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 14, "qty": 10, "unit": "кг"}]}
+{"id": 41, "phrase": "картошка 7 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 14, "qty": 7, "unit": "кг"}]}
+{"id": 42, "phrase": "картофан 5 кг, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 14, "qty": 5, "unit": "кг"}]}
+{"id": 43, "phrase": "мука в/с 2 мешка, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 15, "qty": 2, "unit": "мешок"}]}
+{"id": 44, "phrase": "муку пшеничную 1 мешок, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 15, "qty": 1, "unit": "мешок"}]}
+{"id": 45, "phrase": "мука высший сорт 3 мешка, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 15, "qty": 3, "unit": "мешок"}]}
+{"id": 46, "phrase": "сахар-песок 2 мешка, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 16, "qty": 2, "unit": "мешок"}]}
+{"id": 47, "phrase": "сахарный песок 1 мешок, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 16, "qty": 1, "unit": "мешок"}]}
+{"id": 48, "phrase": "сахара 3 мешка, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 16, "qty": 3, "unit": "мешок"}]}
+{"id": 49, "phrase": "масло растительное 2 канистры, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 17, "qty": 2, "unit": "канистра"}]}
+{"id": 50, "phrase": "подсолнечное масло 1 канистра, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 17, "qty": 1, "unit": "канистра"}]}
+{"id": 51, "phrase": "растительное масло 3 канистры, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 17, "qty": 3, "unit": "канистра"}]}
+{"id": 52, "phrase": "майонез провансаль 2 ведра, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 18, "qty": 2, "unit": "ведро"}]}
+{"id": 53, "phrase": "майонез 67% 1 ведро, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 18, "qty": 1, "unit": "ведро"}]}
+{"id": 54, "phrase": "провансаль 3 ведра, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 18, "qty": 3, "unit": "ведро"}]}
+{"id": 55, "phrase": "кетчуп томатный 2 канистры, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 19, "qty": 2, "unit": "канистра"}]}
+{"id": 56, "phrase": "томатный соус 1 канистра, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 19, "qty": 1, "unit": "канистра"}]}
+{"id": 57, "phrase": "кетчуп 3 канистры, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 19, "qty": 3, "unit": "канистра"}]}
+{"id": 58, "phrase": "дрожжи прессованные 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 20, "qty": 2, "unit": "кг"}]}
+{"id": 59, "phrase": "дрожжи хлебопекарные 1 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 20, "qty": 1, "unit": "кг"}]}
+{"id": 60, "phrase": "прессованные дрожжи 3 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 20, "qty": 3, "unit": "кг"}]}
+{"id": 61, "phrase": "шампиньоны 4 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 21, "qty": 4, "unit": "кг"}]}
+{"id": 62, "phrase": "грибы шампиньоны 2 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 21, "qty": 2, "unit": "кг"}]}
+{"id": 63, "phrase": "шампиньоны свежие 3 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 21, "qty": 3, "unit": "кг"}]}
+{"id": 64, "phrase": "тесто для пиццы 5 упаковок, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 22, "qty": 5, "unit": "упаковка"}]}
+{"id": 65, "phrase": "тесто дрожжевое 2 упаковки, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 22, "qty": 2, "unit": "упаковка"}]}
+{"id": 66, "phrase": "заготовки для пиццы 3 упаковки, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 22, "qty": 3, "unit": "упаковка"}]}
+{"id": 67, "phrase": "бекон коробку и моцареллы два пакета, завтра к 10:00", "delivery_date": "2026-11-04", "items": [{"catalog_id": 1, "qty": 1, "unit": "коробка"}, {"catalog_id": 2, "qty": 2, "unit": "пакет"}]}
+{"id": 68, "phrase": "куриное филе 4 кг, сметана 20% 1 ведро, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 4, "unit": "кг"}, {"catalog_id": 3, "qty": 1, "unit": "ведро"}]}
+{"id": 69, "phrase": "сыр гауда 2 кг и пармезан 1 кг, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 6, "qty": 2, "unit": "кг"}, {"catalog_id": 7, "qty": 1, "unit": "кг"}]}
+{"id": 70, "phrase": "молоко 10 л, сливки 33% 2 л, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 9, "qty": 10, "unit": "л"}, {"catalog_id": 8, "qty": 2, "unit": "л"}]}
+{"id": 71, "phrase": "томаты 5 кг, огурцы 3 кг, лук репчатый 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 11, "qty": 5, "unit": "кг"}, {"catalog_id": 12, "qty": 3, "unit": "кг"}, {"catalog_id": 13, "qty": 2, "unit": "кг"}]}
+{"id": 72, "phrase": "картофель 10 кг, лук 3 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 14, "qty": 10, "unit": "кг"}, {"catalog_id": 13, "qty": 3, "unit": "кг"}]}
+{"id": 73, "phrase": "мука в/с 2 мешка, сахар-песок 1 мешок, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 15, "qty": 2, "unit": "мешок"}, {"catalog_id": 16, "qty": 1, "unit": "мешок"}]}
+{"id": 74, "phrase": "масло сливочное 2 кг, масло растительное 1 канистра, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 10, "qty": 2, "unit": "кг"}, {"catalog_id": 17, "qty": 1, "unit": "канистра"}]}
+{"id": 75, "phrase": "майонез 2 ведра и кетчуп 1 канистра, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 18, "qty": 2, "unit": "ведро"}, {"catalog_id": 19, "qty": 1, "unit": "канистра"}]}
+{"id": 76, "phrase": "дрожжи 1 кг, шампиньоны 3 кг, тесто для пиццы 2 упаковки, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 20, "qty": 1, "unit": "кг"}, {"catalog_id": 21, "qty": 3, "unit": "кг"}, {"catalog_id": 22, "qty": 2, "unit": "упаковка"}]}
+{"id": 77, "phrase": "бекон 2 коробки, куриное филе 5 кг, моцарелла 3 пакета, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 1, "qty": 2, "unit": "коробка"}, {"catalog_id": 4, "qty": 5, "unit": "кг"}, {"catalog_id": 2, "qty": 3, "unit": "пакет"}]}
+{"id": 78, "phrase": "сметана 20% 2 ведра, сыр гауда 1 кг, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 3, "qty": 2, "unit": "ведро"}, {"catalog_id": 6, "qty": 1, "unit": "кг"}]}
+{"id": 79, "phrase": "сливки 33% 3 л, молоко 5 л, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 8, "qty": 3, "unit": "л"}, {"catalog_id": 9, "qty": 5, "unit": "л"}]}
+{"id": 80, "phrase": "помидоры 4 кг, огурцы 2 кг, картофель 8 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 11, "qty": 4, "unit": "кг"}, {"catalog_id": 12, "qty": 2, "unit": "кг"}, {"catalog_id": 14, "qty": 8, "unit": "кг"}]}
+{"id": 81, "phrase": "лук репчатый 3 кг, мука 1 мешок, сахар 1 мешок, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 13, "qty": 3, "unit": "кг"}, {"catalog_id": 15, "qty": 1, "unit": "мешок"}, {"catalog_id": 16, "qty": 1, "unit": "мешок"}]}
+{"id": 82, "phrase": "растительное масло 2 канистры, майонез 1 ведро, кетчуп 1 канистра, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 17, "qty": 2, "unit": "канистра"}, {"catalog_id": 18, "qty": 1, "unit": "ведро"}, {"catalog_id": 19, "qty": 1, "unit": "канистра"}]}
+{"id": 83, "phrase": "дрожжи прессованные 2 кг, тесто для пиццы 3 упаковки, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 20, "qty": 2, "unit": "кг"}, {"catalog_id": 22, "qty": 3, "unit": "упаковка"}]}
+{"id": 84, "phrase": "шампиньоны 5 кг, сыр пармезан 1 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 21, "qty": 5, "unit": "кг"}, {"catalog_id": 7, "qty": 1, "unit": "кг"}]}
+{"id": 85, "phrase": "куриные бёдра 6 кг, картофель 10 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 5, "qty": 6, "unit": "кг"}, {"catalog_id": 14, "qty": 10, "unit": "кг"}]}
+{"id": 86, "phrase": "бекон с/к 1 коробка, сыр гауда 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 1, "qty": 1, "unit": "коробка"}, {"catalog_id": 6, "qty": 2, "unit": "кг"}]}
+{"id": 87, "phrase": "моцарелла 45% 2 пакета, томаты 3 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 2, "qty": 2, "unit": "пакет"}, {"catalog_id": 11, "qty": 3, "unit": "кг"}]}
+{"id": 88, "phrase": "куриная грудка 3 кг, сливки 33% 1 л, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}, {"catalog_id": 8, "qty": 1, "unit": "л"}]}
+{"id": 89, "phrase": "сметана 20% 3 ведра, сахар-песок 1 мешок, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 3, "qty": 3, "unit": "ведро"}, {"catalog_id": 16, "qty": 1, "unit": "мешок"}]}
+{"id": 90, "phrase": "масло 82,5% 1 кг, мука в/с 2 мешка, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 10, "qty": 1, "unit": "кг"}, {"catalog_id": 15, "qty": 2, "unit": "мешок"}]}
+{"id": 91, "phrase": "молоко пастеризованное 8 л, дрожжи 1 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 9, "qty": 8, "unit": "л"}, {"catalog_id": 20, "qty": 1, "unit": "кг"}]}
+{"id": 92, "phrase": "пармезан 2 кг, майонез провансаль 1 ведро, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 7, "qty": 2, "unit": "кг"}, {"catalog_id": 18, "qty": 1, "unit": "ведро"}]}
+{"id": 93, "phrase": "кетчуп томатный 2 канистры, шампиньоны 4 кг, в пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 19, "qty": 2, "unit": "канистра"}, {"catalog_id": 21, "qty": 4, "unit": "кг"}]}
+{"id": 94, "phrase": "тесто дрожжевое 4 упаковки, моцарелла 2 пакета, сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 22, "qty": 4, "unit": "упаковка"}, {"catalog_id": 2, "qty": 2, "unit": "пакет"}]}
+{"id": 95, "phrase": "бекон 1 коробка, картофель 5 кг, лук 2 кг, завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 1, "qty": 1, "unit": "коробка"}, {"catalog_id": 14, "qty": 5, "unit": "кг"}, {"catalog_id": 13, "qty": 2, "unit": "кг"}]}
+{"id": 96, "phrase": "куриное филе 2 кг, бёдра 2 кг, сыр гауда 1 кг, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}, {"catalog_id": 5, "qty": 2, "unit": "кг"}, {"catalog_id": 6, "qty": 1, "unit": "кг"}]}
+{"id": 97, "phrase": "сливки 33% 2 л, молоко 3,2% 4 л, сахар 1 мешок, 06.11.2026", "delivery_date": "2026-11-06", "items": [{"catalog_id": 8, "qty": 2, "unit": "л"}, {"catalog_id": 9, "qty": 4, "unit": "л"}, {"catalog_id": 16, "qty": 1, "unit": "мешок"}]}
+{"id": 98, "phrase": "томаты 2 кг, огурцы 2 кг, шампиньоны 2 кг, завтра к 9:00", "delivery_date": "2026-11-04", "items": [{"catalog_id": 11, "qty": 2, "unit": "кг"}, {"catalog_id": 12, "qty": 2, "unit": "кг"}, {"catalog_id": 21, "qty": 2, "unit": "кг"}]}
+{"id": 99, "phrase": "масло растительное 1 канистра, мука 1 мешок, дрожжи 1 кг, 4 ноября", "delivery_date": "2026-11-04", "items": [{"catalog_id": 17, "qty": 1, "unit": "канистра"}, {"catalog_id": 15, "qty": 1, "unit": "мешок"}, {"catalog_id": 20, "qty": 1, "unit": "кг"}]}
+{"id": 100, "phrase": "бекон 2 коробки, сметана 20% 2 ведра, тесто для пиццы 2 упаковки, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 1, "qty": 2, "unit": "коробка"}, {"catalog_id": 3, "qty": 2, "unit": "ведро"}, {"catalog_id": 22, "qty": 2, "unit": "упаковка"}]}

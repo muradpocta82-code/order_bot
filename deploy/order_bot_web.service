@@ -1,0 +1,26 @@
+[Unit]
+Description=Order bot: мини-приложение каталога (HTTPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orderbot
+Group=orderbot
+WorkingDirectory=/opt/order_bot
+EnvironmentFile=/opt/order_bot/.env
+Environment=TZ=Asia/Tashkent
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/order_bot/venv/bin/python /opt/order_bot/webapp/server.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/order_bot
+MemoryMax=300M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

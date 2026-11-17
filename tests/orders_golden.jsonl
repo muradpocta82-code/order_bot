@@ -1,0 +1,40 @@
+{"id": 1, "phrase": "Куриное филе 2 кг, завтра к 10:00", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}]}
+{"id": 2, "phrase": "куриное филе 5 кг послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 5, "unit": "кг"}]}
+{"id": 3, "phrase": "курица 3 кг сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}]}
+{"id": 4, "phrase": "полтора кг куриного филе", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 1.5, "unit": "кг"}]}
+{"id": 5, "phrase": "10 кг куриного филе на пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 10, "unit": "кг"}]}
+{"id": 6, "phrase": "куриная грудка 4 кг, 6 ноября", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 4, "unit": "кг"}]}
+{"id": 7, "phrase": "куриное филе 1 кг к 12:00 завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 1, "unit": "кг"}]}
+{"id": 8, "phrase": "нужно двадцать пять кг куриного филе, послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 25, "unit": "кг"}]}
+{"id": 9, "phrase": "куриное филе 0,5 кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 0.5, "unit": "кг"}]}
+{"id": 10, "phrase": "куриная грудка 7 кг на понедельник", "delivery_date": "2026-11-09", "items": [{"catalog_id": 4, "qty": 7, "unit": "кг"}]}
+{"id": 11, "phrase": "куринное филе два кг завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}], "voice": true}
+{"id": 12, "phrase": "филе куринное пять кг послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 5, "unit": "кг"}], "voice": true}
+{"id": 13, "phrase": "куриноя грудка три кг сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}], "voice": true}
+{"id": 14, "phrase": "куриная грутка четыре кг на пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 4, "unit": "кг"}], "voice": true}
+{"id": 15, "phrase": "куринное филе полтора кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 1.5, "unit": "кг"}], "voice": true}
+{"id": 16, "phrase": "пять кг куриця завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 5, "unit": "кг"}], "voice": true}
+{"id": 17, "phrase": "мне нужна куриная грудка 2 кг на завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}], "voice": true}
+{"id": 18, "phrase": "закажи куриное филе 6 кг на послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 6, "unit": "кг"}], "voice": true}
+{"id": 19, "phrase": "куринное филе 3 кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}], "voice": true}
+{"id": 20, "phrase": "куриное филе 2 кг к десяти утра завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}], "voice": true}
+{"id": 21, "phrase": "курица восемь кг на пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 8, "unit": "кг"}], "voice": true}
+{"id": 22, "phrase": "куриное филе 12 кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 12, "unit": "кг"}], "voice": true}
+{"id": 23, "phrase": "куриная грудка 1,5 кг завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 1.5, "unit": "кг"}], "voice": true}
+{"id": 24, "phrase": "куринная грудка пять кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 5, "unit": "кг"}], "voice": true}
+{"id": 25, "phrase": "куриное филе 9 кг на сегодня", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 9, "unit": "кг"}], "voice": true}
+{"id": 26, "phrase": "завтра куриное филе 4 кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 4, "unit": "кг"}], "voice": true}
+{"id": 27, "phrase": "послезавтра курица 2,5 кг", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 2.5, "unit": "кг"}], "voice": true}
+{"id": 28, "phrase": "куриное филе 3 кг, 7 ноября", "delivery_date": "2026-11-07", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}], "voice": true}
+{"id": 29, "phrase": "куриное филе 15 кг на понедельник", "delivery_date": "2026-11-09", "items": [{"catalog_id": 4, "qty": 15, "unit": "кг"}], "voice": true}
+{"id": 30, "phrase": "куриная грудка 2 кг завтра к 11", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}], "voice": true}
+{"id": 31, "phrase": "куриця 1 кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 1, "unit": "кг"}], "voice": true}
+{"id": 32, "phrase": "куринное филе 8 кг на пятницу", "delivery_date": "2026-11-06", "items": [{"catalog_id": 4, "qty": 8, "unit": "кг"}], "voice": true}
+{"id": 33, "phrase": "пять килограмм куриного филе", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 5, "unit": "кг"}], "voice": true}
+{"id": 34, "phrase": "две кг куриного филе завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}], "voice": true}
+{"id": 35, "phrase": "куринное филе 7 кг послезавтра", "delivery_date": "2026-11-05", "items": [{"catalog_id": 4, "qty": 7, "unit": "кг"}], "voice": true}
+{"id": 36, "phrase": "куриное филе 0,5 кг завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 0.5, "unit": "кг"}], "voice": true}
+{"id": 37, "phrase": "мне куриное филе 3 кг на завтра", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 3, "unit": "кг"}], "voice": true}
+{"id": 38, "phrase": "куриная грудка десять кг", "delivery_date": "2026-11-04", "items": [{"catalog_id": 4, "qty": 10, "unit": "кг"}], "voice": true}
+{"id": 39, "phrase": "куриное филе 20 кг на 9 ноября", "delivery_date": "2026-11-09", "items": [{"catalog_id": 4, "qty": 20, "unit": "кг"}], "voice": true}
+{"id": 40, "phrase": "курица 1 кг сегодня к обеду", "delivery_date": "2026-11-03", "items": [{"catalog_id": 4, "qty": 1, "unit": "кг"}], "voice": true}

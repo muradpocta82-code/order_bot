@@ -1,0 +1,20 @@
+[Unit]
+Description=Order bot: резервная копия базы PostgreSQL
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=orderbot
+Environment=TZ=Asia/Tashkent
+Environment=BACKUP_DIR=/var/backups/order_bot
+WorkingDirectory=/opt/order_bot
+ExecStart=/opt/order_bot/venv/bin/python /opt/order_bot/scripts/backup_db.py
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/order_bot
+NoNewPrivileges=true
