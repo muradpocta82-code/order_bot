@@ -847,6 +847,15 @@ class Database:
             await self.log_event(order_id, "payment", {"method": "credit", "amount": 0})
         return changed
 
+    async def credit_orders(self) -> list[dict[str, Any]]:
+        """Заказы в долг — для отчёта по возрасту задолженности."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, chef_id, chef_name, total, created_at FROM orders "
+            "WHERE payment_status = 'credit' ORDER BY created_at"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def debt_list(self) -> list[dict[str, Any]]:
         assert self.conn is not None
         cursor = await self.conn.execute(

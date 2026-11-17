@@ -29,6 +29,7 @@ from .keyboards import (
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
 from .summary import today_summary
+from .buylist import as_text as buylist_text, as_xlsx as buylist_xlsx, collect as buylist_collect
 from .handlers import _process_order  # noqa: E402
 from .tonflow import send_ton_invoice
 
@@ -114,8 +115,64 @@ async def cmd_debt(message: Message, db: Database, settings: Settings) -> None:
         )
     lines.append("")
     lines.append(f"Итого: <b>{money(total)}</b>")
+    buckets = await debt_age_buckets(db, settings)
+    if buckets:
+        parts = [f"{label}: {money(amount)}" for label, amount in buckets.items() if amount]
+        if parts:
+            lines.append("По возрасту: " + " · ".join(parts))
+    oldest = await debt_oldest_days(db, settings)
+    if oldest is not None and oldest > 14:
+        lines.append(f"⚠️ Самый старый долг — {oldest} дней")
     lines.append("Закрыть долг: <code>/settle ID</code>")
     await message.answer("\n".join(lines))
+
+
+def _as_date(value: Any):
+    from datetime import date, datetime
+
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.fromisoformat(str(value)[:19]).date()
+    except ValueError:
+        return None
+
+
+async def debt_age_buckets(db: Database, settings: Settings) -> dict[str, float]:
+    """Сколько денег в долгах по возрасту: 0-7, 8-14, 15-30, 30+ дней."""
+    from datetime import datetime
+
+    today = datetime.now(settings.timezone).date()
+    buckets: dict[str, float] = {"0–7 дн": 0.0, "8–14 дн": 0.0, "15–30 дн": 0.0, "30+ дн": 0.0}
+    for order in await db.credit_orders():
+        created = _as_date(order.get("created_at"))
+        if created is None:
+            continue
+        age = (today - created).days
+        amount = float(order.get("total") or 0)
+        if age <= 7:
+            buckets["0–7 дн"] += amount
+        elif age <= 14:
+            buckets["8–14 дн"] += amount
+        elif age <= 30:
+            buckets["15–30 дн"] += amount
+        else:
+            buckets["30+ дн"] += amount
+    return buckets
+
+
+async def debt_oldest_days(db: Database, settings: Settings) -> int | None:
+    from datetime import datetime
+
+    today = datetime.now(settings.timezone).date()
+    ages = [
+        (today - _as_date(order.get("created_at"))).days
+        for order in await db.credit_orders()
+        if _as_date(order.get("created_at")) is not None
+    ]
+    return max(ages) if ages else None
 
 
 @router.message(Command("settle"))
@@ -383,3 +440,42 @@ async def cmd_price_morning(
         "Включить: /price_morning on · выключить: /price_morning off\n"
         "Время меняется настройкой price_morning_hour."
     )
+
+
+@router.message(Command("buylist"))
+async def cmd_buylist(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Что закупать на дату: текст + файл Excel."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from datetime import datetime, timedelta
+
+    now = datetime.now(settings.timezone)
+    raw = (command.args or "").strip().lower()
+    if raw in ("", "завтра", "tomorrow"):
+        day = (now.date() + timedelta(days=1)).isoformat()
+    elif raw in ("сегодня", "today"):
+        day = now.date().isoformat()
+    else:
+        try:
+            day = datetime.fromisoformat(raw).date().isoformat()
+        except ValueError:
+            await message.answer(
+                "Формат: /buylist (на завтра), /buylist сегодня или /buylist 2026-11-20"
+            )
+            return
+    rows, pending = await buylist_collect(db, catalog, day)
+    await message.answer(buylist_text(rows, pending, day))
+    if not rows:
+        return
+    from aiogram.types import BufferedInputFile
+
+    document = BufferedInputFile(
+        buylist_xlsx(rows, day), filename=f"zakupka-{day}.xlsx"
+    )
+    await message.answer_document(document, caption=f"Закупка на {day} — Excel")
