@@ -8,8 +8,10 @@ from __future__ import annotations
 import logging
 import re
 
+from aiogram import Bot
 from aiogram.types import Message
 
+from .catalog import Catalog
 from .config import Settings
 from .db import Database
 from .formatting import esc
