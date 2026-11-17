@@ -28,6 +28,7 @@ from .keyboards import (
 )
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
+from .summary import today_summary
 from .handlers import _process_order  # noqa: E402
 from .tonflow import send_ton_invoice
 
@@ -313,4 +314,42 @@ async def cmd_margin(
             f"⚠️ По {unknown} позициям нет закупочной цены — "
             "добавьте колонку «Закупка» в прайс."
         )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("today"))
+async def cmd_today(message: Message, db: Database, settings: Settings) -> None:
+    """Сводка дня: заказы, наличные, долги, свежесть бэкапа."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    await message.answer(await today_summary(db, settings))
+
+
+@router.message(Command("log"))
+async def cmd_order_log(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Хронология заказа: кто и когда менял статус, оплату, долг."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().lstrip("№#")
+    if not raw.isdigit():
+        await message.answer("Как смотреть: /log 47 — номер заказа из карточки.")
+        return
+    order_id = int(raw)
+    events = await db.order_events(order_id, limit=30)
+    if not events:
+        await message.answer(
+            f"По заказу №{order_id} событий нет. История ведётся с 17.11.2026."
+        )
+        return
+    lines = [f"🧾 <b>История заказа №{order_id}</b>", ""]
+    for event in reversed(events):
+        moment = str(event.get("created_at") or "")[:16]
+        kind = event.get("kind")
+        payload = event.get("payload") or {}
+        if isinstance(payload, str):
+            payload = {}
+        detail = ", ".join(f"{key}={value}" for key, value in payload.items())
+        lines.append(f"{moment} · {esc(str(kind))} {esc(detail)[:120]}")
     await message.answer("\n".join(lines))

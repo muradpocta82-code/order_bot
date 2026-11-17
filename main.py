@@ -38,6 +38,7 @@ from orderbot.keyboards import (
     reminder_keyboard,
 )
 from orderbot.stt import Transcriber
+from orderbot.summary import today_summary
 from orderbot.watch import ErrorWatch
 
 log = logging.getLogger("orderbot")
@@ -569,6 +570,33 @@ async def _evening_loop(bot: Bot, db: Database, settings: Settings) -> None:
             log.warning("Ошибка вечерней сводки: %s", exc)
 
 
+async def _morning_summary(bot: Bot, db: Database, settings: Settings) -> bool:
+    """Сводка «что горит» владельцу каждое утро, один раз в день."""
+    manager = settings.manager_chat_id
+    if manager is None:
+        return False
+    now = datetime.now(settings.timezone)
+    if now.hour < 9:
+        return False
+    today = now.date().isoformat()
+    if await db.get_setting("last_morning_summary") == today:
+        return False
+    await db.set_setting("last_morning_summary", today)
+    text = await today_summary(db, settings)
+    await bot.send_message(int(manager), text)
+    log.info("Утренняя сводка отправлена")
+    return True
+
+
+async def _morning_loop(bot: Bot, db: Database, settings: Settings) -> None:
+    while True:
+        try:
+            await _morning_summary(bot, db, settings)
+        except Exception as exc:
+            log.warning("Ошибка утренней сводки: %s", exc)
+        await asyncio.sleep(15 * 60)
+
+
 def _week_key(value: str) -> tuple[int, int] | None:
     try:
         day = datetime.fromisoformat(str(value)).date()
@@ -913,6 +941,7 @@ async def run() -> int:
                         BotCommand(command="missing", description="Нет в прайсе"),
                         BotCommand(command="quality", description="Качество разбора"),
                         BotCommand(command="health", description="Здоровье"),
+                        BotCommand(command="today", description="Сводка дня"),
                     ],
                     scope=BotCommandScopeChat(chat_id=settings.manager_chat_id),
                 )
@@ -954,6 +983,9 @@ async def run() -> int:
     evening_task = asyncio.create_task(
         _evening_loop(bot, db, settings), name="evening-summary"
     )
+    morning_task = asyncio.create_task(
+        _morning_loop(bot, db, settings), name="morning-summary"
+    )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"
     )
@@ -994,6 +1026,7 @@ async def run() -> int:
             backup_send_task,
             maintenance_task,
             evening_task,
+            morning_task,
             weekly_task,
             reminder_task,
             verify_task,
