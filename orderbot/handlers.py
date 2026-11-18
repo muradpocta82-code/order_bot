@@ -4,11 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import os
 import re
 import secrets
 import shutil
-import time
 from datetime import datetime, timedelta
 from math import ceil
 from pathlib import Path
@@ -641,6 +641,7 @@ async def _process_order_serial(
     status_message: Message | None = None,
 ) -> None:
     bot = message.bot
+    started = time.monotonic()
     status = status_message or await message.answer("Секунду, читаю заказ…")
     if transcript:
         try:
@@ -674,6 +675,16 @@ async def _process_order_serial(
         await _apply_stock(draft, db, catalog)
         await _apply_units(draft, db, catalog)
         await db.create_draft(draft)
+        await db.log_parse(
+            chef_id=message.from_user.id,
+            chat_id=message.chat.id,
+            source=source,
+            path=str(getattr(parsed, "provider", "") or draft.get("provider") or "nlu"),
+            items=len(draft.get("items") or []),
+            questions=int(draft.get("questions") or 0),
+            latency_ms=int((time.monotonic() - started) * 1000),
+            text_len=len(text or ""),
+        )
         await _advance_draft(
             bot,
             db,
@@ -850,9 +861,20 @@ async def cmd_quality(message: Message, db: Database, settings: Settings) -> Non
         await message.answer("Команда доступна только менеджеру.")
         return
     stats = await db.quality_stats(days=30)
-    await message.answer(
-        format_quality(stats), reply_markup=manager_back_keyboard()
-    )
+    text = format_quality(stats)
+    parse = await db.parse_stats(30)
+    if parse["total"]:
+        text += "\n\n🔍 <b>Разбор заказов за 30 дней</b>\n"
+        text += f"Всего разобрано: {parse['total']}, вопросов: {parse['questions']}\n"
+        for row in parse["rows"][:6]:
+            avg_q = float(row.get("avg_q") or 0)
+            avg_ms = float(row.get("avg_ms") or 0)
+            text += (
+                f"• {esc(str(row.get('source')))} / {esc(str(row.get('path')))}: "
+                f"{row['n']} зак., вопросов {avg_q:.1f}, "
+                f"{avg_ms / 1000:.1f} с\n"
+            )
+    await message.answer(text, reply_markup=manager_back_keyboard())
 
 
 @router.message(Command("stop"))

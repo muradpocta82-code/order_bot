@@ -762,6 +762,63 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def log_parse(
+        self,
+        chef_id: int | None,
+        chat_id: int | None,
+        source: str,
+        path: str,
+        items: int,
+        questions: int,
+        latency_ms: int | None,
+        text_len: int,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Одна строка на каждый разобранный заказ: качество и скорость разбора."""
+        if self.conn is None:
+            return
+        try:
+            await self.conn.execute(
+                "INSERT INTO parse_events(chef_id, chat_id, source, path, items, questions, "
+                "latency_ms, text_len, payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                (
+                    chef_id,
+                    chat_id,
+                    source,
+                    path,
+                    int(items),
+                    int(questions),
+                    latency_ms,
+                    int(text_len),
+                    json.dumps(payload or {}, ensure_ascii=False),
+                ),
+            )
+            await self.conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Событие разбора не записано: %s", exc)
+
+    async def parse_stats(self, days: int = 30) -> dict[str, Any]:
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=int(days))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT source, path, COUNT(*) AS n, "
+            "AVG(questions) AS avg_q, AVG(latency_ms) AS avg_ms, "
+            "AVG(items) AS avg_items "
+            "FROM parse_events WHERE created_at >= %s "
+            "GROUP BY source, path ORDER BY n DESC",
+            (since,),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        total_cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(questions), 0) AS q "
+            "FROM parse_events WHERE created_at >= %s",
+            (since,),
+        )
+        total = dict(await total_cursor.fetchone() or {})
+        return {"rows": rows, "total": int(total.get("n") or 0), "questions": int(total.get("q") or 0)}
+
     async def update_order_status(self, order_id: int, status: str) -> bool:
         """Меняет статус, только если он реально другой. False — уже был этот."""
         assert self.conn is not None
