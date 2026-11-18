@@ -207,6 +207,8 @@ def format_order(order: dict[str, Any], title: str = "Заказ") -> str:
     if order.get("delivery_phone"):
         lines.append(f"📞 Телефон: {esc(order['delivery_phone'])}")
     lines.append(f"💰 Оплата: {payment_line(order)}")
+    if order.get("client_note"):
+        lines.append(f"📌 {esc(order['client_note'])}")
     lines.append("")
     for position, item in enumerate(items, start=1):
         if item.get("status") == "not_in_catalog":

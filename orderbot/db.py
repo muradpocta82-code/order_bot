@@ -638,6 +638,9 @@ class Database:
             "SELECT * FROM order_items WHERE order_id = %s ORDER BY id", (order_id,)
         )
         order["items"] = [dict(item) for item in await items_cursor.fetchall()]
+        note = await self.get_setting(f"client_note:{order.get('chef_id')}", "")
+        if note:
+            order["client_note"] = note
         return order
 
     async def list_orders_page(

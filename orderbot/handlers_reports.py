@@ -621,3 +621,87 @@ async def cmd_cost(
     if sell and margin <= 0:
         lines.append("⚠️ Позиция убыточная — проверьте цену продажи.")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("queue"))
+async def cmd_queue(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Очередь сборки: сегодня и завтра по слотам, вместо потока карточек."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from datetime import datetime, timedelta
+
+    now = datetime.now(settings.timezone)
+    days = [now.date(), now.date() + timedelta(days=1)]
+    if (command.args or "").strip().lower() in ("сегодня", "today"):
+        days = days[:1]
+    lines = ["🗂 <b>Очередь сборки</b>"]
+    empty = True
+    for day in days:
+        orders = [
+            order
+            for order in await db.orders_for_date(day.isoformat())
+            if str(order.get("status")) in ("new", "accepted", "ready")
+        ]
+        lines.append("")
+        lines.append(f"<b>{day.strftime('%d.%m')}</b> — {len(orders)} заказ(ов)")
+        if not orders:
+            lines.append("   пусто")
+            continue
+        empty = False
+        groups: dict[str, list] = {}
+        for order in orders:
+            groups.setdefault(str(order.get("delivery_time") or "без слота"), []).append(order)
+        for slot, slot_orders in sorted(groups.items()):
+            total = sum(float(order.get("total") or 0) for order in slot_orders)
+            lines.append(f"   ⏰ {esc(slot)} · {len(slot_orders)} · {money(total)}")
+            for order in sorted(slot_orders, key=lambda o: int(o["id"])):
+                status = {
+                    "new": "не принят",
+                    "accepted": "в сборке",
+                    "ready": "собран",
+                }.get(str(order.get("status")), str(order.get("status")))
+                name = esc(order.get("chef_name") or order.get("chef_id"))
+                lines.append(f"      №{order['id']} {name} — {status}")
+    if empty:
+        lines.append("")
+        lines.append("Собирать нечего.")
+    lines.append("")
+    lines.append("Карточка заказа: /log НОМЕР — история, /orders — список")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("note"))
+async def cmd_note(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Заметка о клиенте: /note ID текст (видна в каждой карточке его заказа)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(
+            "Формат: <code>/note ID текст</code>\n"
+            "Пример: /note 123456789 принимает с 6 до 8, вход со двора\n"
+            "Очистить: /note ID -"
+        )
+        return
+    parts = raw.split(maxsplit=1)
+    if not parts[0].lstrip("-").isdigit():
+        await message.answer("Первым идёт id клиента (он есть в карточке и в /debt).")
+        return
+    chef_id = int(parts[0])
+    text = parts[1].strip() if len(parts) > 1 else ""
+    if not text:
+        note = await db.get_setting(f"client_note:{chef_id}", "")
+        await message.answer(
+            f"📌 Заметка: {esc(note)}" if note else "Заметки нет."
+        )
+        return
+    if text in ("-", "удалить", "нет"):
+        await db.set_setting(f"client_note:{chef_id}", "")
+        await message.answer("Заметка удалена.")
+        return
+    await db.set_setting(f"client_note:{chef_id}", text[:300])
+    await message.answer(f"✅ Заметка сохранена и будет видна в карточках заказов клиента {chef_id}.")
