@@ -797,6 +797,77 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             log.warning("Событие разбора не записано: %s", exc)
 
+    async def ops_stats(self, days: int = 30) -> dict[str, Any]:
+        """Скорость работы и причины сбоев — из журнала событий заказов."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=int(days))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT o.id, "
+            "MIN(e_pack.created_at) AS packed_at, "
+            "MIN(e_done.created_at) AS done_at, o.created_at AS created_at "
+            "FROM orders o "
+            "LEFT JOIN order_events e_pack ON e_pack.order_id = o.id "
+            "  AND e_pack.kind = 'status' AND e_pack.payload->>'to' = 'ready' "
+            "LEFT JOIN order_events e_done ON e_done.order_id = o.id "
+            "  AND e_done.kind = 'status' AND e_done.payload->>'to' = 'done' "
+            "WHERE o.created_at >= %s AND o.status != 'cancelled' "
+            "GROUP BY o.id, o.created_at",
+            (since,),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+        def _minutes(start, end) -> float | None:
+            if not start or not end:
+                return None
+            try:
+                if isinstance(start, str):
+                    start = datetime.fromisoformat(start[:19])
+                if isinstance(end, str):
+                    end = datetime.fromisoformat(end[:19])
+                if getattr(start, "tzinfo", None) is not None:
+                    start = start.replace(tzinfo=None)
+                if getattr(end, "tzinfo", None) is not None:
+                    end = end.replace(tzinfo=None)
+                return max((end - start).total_seconds() / 60, 0)
+            except (TypeError, ValueError):
+                return None
+
+        pack_times = [value for value in (
+            _minutes(row.get("created_at"), row.get("packed_at")) for row in rows
+        ) if value is not None]
+        deliver_times = [value for value in (
+            _minutes(row.get("packed_at"), row.get("done_at")) for row in rows
+        ) if value is not None]
+
+        failed_cursor = await self.conn.execute(
+            "SELECT COALESCE(payload->>'reason', 'без причины') AS reason, "
+            "COUNT(*) AS n FROM order_events WHERE kind = 'failed' "
+            "AND created_at >= %s GROUP BY 1 ORDER BY n DESC",
+            (since,),
+        )
+        failed = [dict(row) for row in await failed_cursor.fetchall()]
+
+        claims_cursor = await self.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM claims WHERE created_at >= %s "
+            "GROUP BY 1 ORDER BY n DESC",
+            (since,),
+        )
+        claims = [dict(row) for row in await claims_cursor.fetchall()]
+
+        return {
+            "orders": len(rows),
+            "pack_avg": sum(pack_times) / len(pack_times) if pack_times else None,
+            "pack_count": len(pack_times),
+            "deliver_avg": (
+                sum(deliver_times) / len(deliver_times) if deliver_times else None
+            ),
+            "deliver_count": len(deliver_times),
+            "failed": failed,
+            "claims": claims,
+        }
+
     async def parse_stats(self, days: int = 30) -> dict[str, Any]:
         assert self.conn is not None
         since = (datetime.now() - timedelta(days=int(days))).strftime(

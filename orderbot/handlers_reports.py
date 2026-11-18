@@ -928,3 +928,56 @@ async def cmd_claims(message: Message, db: Database, settings: Settings) -> None
     lines.append("")
     lines.append("Решение — кнопками в сообщении о претензии.")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("ops"))
+async def cmd_ops(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Скорость сборки и доставки, причины сбоев и итоги претензий."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    days = 30
+    raw = (command.args or "").strip()
+    if raw.isdigit():
+        days = max(1, min(365, int(raw)))
+    stats = await db.ops_stats(days)
+    if not stats["orders"]:
+        await message.answer(
+            f"За {days} дней нет заказов с историей. Журнал событий ведётся с 17.11.2026."
+        )
+        return
+    lines = [f"⚙️ <b>Исполнение за {days} дней</b>", ""]
+    lines.append(f"Заказов: <b>{stats['orders']}</b>")
+    if stats["pack_avg"] is not None:
+        lines.append(
+            f"Создан → собран: <b>{stats['pack_avg']:.0f} мин</b> "
+            f"(по {stats['pack_count']} заказам)"
+        )
+    else:
+        lines.append("Создан → собран: пока нет данных")
+    if stats["deliver_avg"] is not None:
+        lines.append(
+            f"Собран → доставлен: <b>{stats['deliver_avg']:.0f} мин</b> "
+            f"(по {stats['deliver_count']} заказам)"
+        )
+    else:
+        lines.append("Собран → доставлен: пока нет данных")
+    if stats["failed"]:
+        lines.append("")
+        lines.append("<b>Недоставки</b>")
+        for row in stats["failed"]:
+            lines.append(f"• {esc(str(row['reason']))} — {row['n']}")
+    if stats["claims"]:
+        lines.append("")
+        lines.append("<b>Претензии</b>")
+        titles = {
+            "open": "в работе",
+            "replace": "заменили",
+            "credit": "кредит-нота",
+            "reject": "отклонили",
+            "closed": "закрыты",
+        }
+        for row in stats["claims"]:
+            lines.append(f"• {titles.get(str(row['status']), row['status'])} — {row['n']}")
+    await message.answer("\n".join(lines))
