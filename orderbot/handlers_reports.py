@@ -29,6 +29,7 @@ from .keyboards import (
     price_undo_keyboard,
     price_update_keyboard,
 )
+from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
 from .summary import today_summary
@@ -626,19 +627,14 @@ async def cmd_cost(
     await message.answer("\n".join(lines))
 
 
-@router.message(Command("queue"))
-async def cmd_queue(
-    message: Message, command: CommandObject, db: Database, settings: Settings
-) -> None:
-    """Очередь сборки: сегодня и завтра по слотам, вместо потока карточек."""
-    if not _is_manager(settings, message.from_user.id, message.chat.id):
-        return
+async def build_queue_text(
+    db: Database, settings: Settings, days_count: int = 2
+) -> str:
+    """Очередь сборки: сегодня и (по умолчанию) завтра по слотам."""
     from datetime import datetime, timedelta
 
     now = datetime.now(settings.timezone)
-    days = [now.date(), now.date() + timedelta(days=1)]
-    if (command.args or "").strip().lower() in ("сегодня", "today"):
-        days = days[:1]
+    days = [now.date(), now.date() + timedelta(days=1)][: max(1, days_count)]
     lines = ["🗂 <b>Очередь сборки</b>"]
     empty = True
     for day in days:
@@ -655,7 +651,9 @@ async def cmd_queue(
         empty = False
         groups: dict[str, list] = {}
         for order in orders:
-            groups.setdefault(str(order.get("delivery_time") or "без слота"), []).append(order)
+            groups.setdefault(
+                str(order.get("delivery_time") or "без слота"), []
+            ).append(order)
         for slot, slot_orders in sorted(groups.items()):
             total = sum(float(order.get("total") or 0) for order in slot_orders)
             lines.append(f"   ⏰ {esc(slot)} · {len(slot_orders)} · {money(total)}")
@@ -672,7 +670,70 @@ async def cmd_queue(
         lines.append("Собирать нечего.")
     lines.append("")
     lines.append("Карточка заказа: /log НОМЕР — история, /orders — список")
-    await message.answer("\n".join(lines))
+    return "\n".join(lines)
+
+
+@router.message(Command("queue"))
+async def cmd_queue(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Очередь сборки: сегодня и завтра по слотам, вместо потока карточек."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    one_day = (command.args or "").strip().lower() in ("сегодня", "today")
+    await message.answer(await build_queue_text(db, settings, 1 if one_day else 2))
+
+
+@router.callback_query(F.data == "quiet:queue")
+async def cb_quiet_queue(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Кнопка «Открыть очередь» из утренней сводки тихих часов."""
+    chat_id = callback.message.chat.id if callback.message else None
+    if not _is_manager(settings, callback.from_user.id, chat_id):
+        await callback.answer("Очередь показывает только менеджеру.", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message is not None:
+        await callback.message.answer(await build_queue_text(db, settings))
+
+
+@router.message(Command("quiet"))
+async def cmd_quiet(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Тихие часы: ночные карточки приходят одной сводкой утром."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg in ("off", "0", "выкл", "нет"):
+        await db.set_setting(quiet_mod.QUIET_KEY, "off")
+        await message.answer(
+            "Тихие часы выключены: карточки заказов приходят сразу."
+        )
+        return
+    if arg:
+        window = quiet_mod.parse_window(arg)
+        if window is None:
+            await message.answer(
+                "Формат: <code>/quiet 22-8</code> (можно через полночь).\n"
+                "Выключить: /quiet off"
+            )
+            return
+        await db.set_setting(quiet_mod.QUIET_KEY, f"{window[0]}-{window[1]}")
+        await message.answer(
+            f"Тихие часы: {quiet_mod.window_text(window)} по Ташкенту.\n"
+            "Ночные заказы придут одной сводкой утром, тревоги о сбоях — сразу."
+        )
+        return
+    window = await quiet_mod.quiet_window(db)
+    state = quiet_mod.window_text(window)
+    items = await quiet_mod.load_queue(db)
+    pending = f" В ожидании: {len(items)} заказ(ов)." if items else ""
+    await message.answer(
+        f"Тихие часы: {state}.{pending}\n"
+        "Поставить: /quiet 23-7 · выключить: /quiet off"
+    )
 
 
 @router.message(Command("note"))

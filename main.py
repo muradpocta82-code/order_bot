@@ -38,6 +38,7 @@ from orderbot.keyboards import (
     reminder_keyboard,
 )
 from orderbot.pricecast import send_morning_prices
+from orderbot.quiet import bind as bind_quiet, flush_queue
 from orderbot.stt import Transcriber
 from orderbot.summary import today_summary
 from orderbot.watch import ErrorWatch
@@ -418,6 +419,16 @@ async def _resend_courier(bot: Bot, db: Database, settings: Settings) -> None:
         except Exception as exc:
             log.warning("Заказ №%s пока не удалось дослать доставщику: %s", order_id, exc)
             break
+
+
+async def _quiet_loop(bot: Bot, db: Database, settings: Settings) -> None:
+    """Раз в 5 минут: если тихие часы кончились, отправить накопленное одной сводкой."""
+    while True:
+        await asyncio.sleep(5 * 60)
+        try:
+            await flush_queue(bot, db, settings)
+        except Exception as exc:
+            log.warning("Ошибка сводки тихих часов: %s", exc)
 
 
 async def _notify_loop(bot: Bot, db: Database, settings: Settings) -> None:
@@ -967,6 +978,7 @@ async def run() -> int:
     dp["catalog"] = catalog
     dp["ai"] = ai
     dp["transcriber"] = transcriber
+    bind_quiet(db, settings)
     dp.include_router(router)
     dp.errors.register(
         functools.partial(_on_error, db=db, settings=settings, bot=bot)
@@ -1027,8 +1039,12 @@ async def run() -> int:
     await _resend_unnotified(bot, db, settings)
     await _resend_courier(bot, db, settings)
     log.info("Бот готов, старт polling (%.1f сек)", time.time() - started)
+    await flush_queue(bot, db, settings)
     notify_task = asyncio.create_task(
         _notify_loop(bot, db, settings), name="order-notify"
+    )
+    quiet_task = asyncio.create_task(
+        _quiet_loop(bot, db, settings), name="quiet-hours"
     )
     health_task = asyncio.create_task(
         _health_loop(bot, db, settings, ai, watch), name="health-alerts"
@@ -1086,6 +1102,7 @@ async def run() -> int:
         log.info("Остановка бота")
         for task in (
             webapp_task,
+            quiet_task,
             notify_task,
             health_task,
             backup_send_task,

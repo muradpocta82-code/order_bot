@@ -19,6 +19,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 
+from . import quiet
 from .config import Settings
 from .db import Database
 from .formatting import format_order, money, split_message
@@ -75,7 +76,10 @@ async def _send_order_card(
     """Отправляет карточку заказа, разбивая её на части при переполнении.
 
     Возвращает message_id последней части (у неё кнопки).
+    В тихие часы карточка не отправляется: заказ копится в утренней сводке.
     """
+    if await quiet.maybe_batch_bound(chat_id, order):
+        return None
     chunks = split_message(format_order(order, title))
     last_id: int | None = None
     for index, chunk in enumerate(chunks):

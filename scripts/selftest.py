@@ -242,6 +242,44 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_quiet_hours() -> None:
+    print("\n[тихие часы]")
+    from datetime import datetime as _dt
+
+    from orderbot.quiet import (
+        digest_text,
+        in_window,
+        parse_window,
+        queue_keyboard,
+        window_text,
+    )
+
+    check("окно ночью задано", parse_window("22-8") == (22, 8))
+    check("окно можно выключить", parse_window("off") is None)
+    check("мусор в настройке = выключено", parse_window("абракадабра") is None)
+    check("равные часы = выключено", parse_window("5-5") is None)
+    check("23:00 внутри 22-8", in_window(_dt(2026, 11, 18, 23, 0), (22, 8)))
+    check("03:00 внутри 22-8", in_window(_dt(2026, 11, 18, 3, 0), (22, 8)))
+    check("12:00 вне 22-8", not in_window(_dt(2026, 11, 18, 12, 0), (22, 8)))
+    check("11:00 внутри 8-14", in_window(_dt(2026, 11, 18, 11, 0), (8, 14)))
+    check("14:00 уже вне 8-14", not in_window(_dt(2026, 11, 18, 14, 0), (8, 14)))
+    check("выключено — тишины нет", not in_window(_dt(2026, 11, 18, 23, 0), None))
+    check("подпись окна", window_text((22, 8)) == "с 22:00 до 08:00", window_text((22, 8)))
+    items = [
+        {"id": 47, "name": "Кафе Ромашка", "slot": "09:00–12:00", "total": 42.5},
+        {"id": 48, "name": "Плов-хаус", "slot": "12:00–15:00", "total": 10.0},
+    ]
+    text = digest_text(items)
+    check("сводка считает заказы", "2 заказ(ов)" in text, text)
+    check("сводка считает сумму", "52.50" in text, text)
+    check("сводка перечисляет номера", "№47" in text and "№48" in text, text)
+    markup = queue_keyboard()
+    check(
+        "кнопка «Открыть очередь»",
+        markup.inline_keyboard[0][0].callback_data == "quiet:queue",
+    )
+
+
 def test_module_names() -> None:
     """Каждый модуль должен быть «самодостаточным»: без забытых импортов.
 
@@ -889,6 +927,7 @@ async def main() -> int:
     print("=" * 70)
     test_core()
     test_slots()
+    test_quiet_hours()
     test_module_names()
     await test_db()
     await test_start_and_greeting()
