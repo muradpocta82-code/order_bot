@@ -143,6 +143,15 @@ class Database:
     # ------------------------------------------------------------------
     # настройки
     # ------------------------------------------------------------------
+    async def settings_like(self, prefix: str) -> list[dict[str, Any]]:
+        """Пары ключ-значение по префиксу (например, все приглашения ref:)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT key, value FROM settings WHERE key LIKE %s ORDER BY key",
+            (f"{prefix}%",),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def get_setting(self, key: str, default: str | None = None) -> str | None:
         assert self.conn is not None
         cursor = await self.conn.execute("SELECT value FROM settings WHERE key = %s", (key,))

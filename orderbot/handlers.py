@@ -744,9 +744,14 @@ async def _courier_page(db: Database, page: int):
 
 @router.message(CommandStart())
 async def cmd_start(
-    message: Message, db: Database, settings: Settings, catalog: Catalog
+    message: Message,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    command: CommandObject | None = None,
 ) -> None:
     await db.set_chat_state(message.chat.id, "qty_input", "")
+    await _remember_invite(message, db, settings, command)
     if _is_manager(settings, message.from_user.id, message.chat.id):
         await message.answer(
             await _manager_panel_text(db), reply_markup=manager_panel_keyboard()
@@ -780,6 +785,56 @@ async def cmd_start(
     await message.answer(
         "Кнопки внизу помогут быстрее: «Мои заказы», «Как обычно», «Менеджер».",
         reply_markup=client_reply_keyboard(),
+    )
+
+
+async def _remember_invite(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    command: CommandObject | None,
+) -> None:
+    """Ссылка-приглашение: /start ref_<id> запоминает, кто привёл клиента."""
+    raw = ((command.args if command else None) or "").strip()
+    if not raw.lower().startswith("ref_"):
+        return
+    referrer = raw[4:].strip()
+    if not referrer.lstrip("-").isdigit():
+        return
+    user_id = int(message.from_user.id)
+    if int(referrer) == user_id:
+        return
+    existing = await db.get_setting(f"ref:{user_id}", "")
+    if existing:
+        return
+    await db.set_setting(f"ref:{user_id}", referrer)
+    await db.set_setting(
+        f"ref_at:{user_id}", datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await message.bot.send_message(
+                int(manager),
+                f"🤝 Новый клиент пришёл по приглашению {referrer}: "
+                f"{esc(message.from_user.full_name)} (id {user_id}).",
+            )
+        except Exception:
+            pass
+
+
+@router.message(Command("invite"))
+async def cmd_invite(message: Message, db: Database, settings: Settings) -> None:
+    """Ссылка-приглашение для клиента: привёл друга — видно менеджеру."""
+    if _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Ссылки клиентов смотрите командой /refs.")
+        return
+    me = await message.bot.get_me()
+    link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
+    await message.answer(
+        "🤝 Пригласите коллегу из другого заведения:\n"
+        f"{link}\n\n"
+        "По этой ссылке он сразу попадёт к нам, а мы увидим, кто привёл."
     )
 
 

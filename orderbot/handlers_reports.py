@@ -981,3 +981,30 @@ async def cmd_ops(
         for row in stats["claims"]:
             lines.append(f"• {titles.get(str(row['status']), row['status'])} — {row['n']}")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("refs"))
+async def cmd_refs(message: Message, db: Database, settings: Settings) -> None:
+    """Кто кого привёл: клиенты по реферальным ссылкам."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    rows = await db.settings_like("ref:")
+    if not rows:
+        await message.answer(
+            "Приглашений пока нет. Клиент может получить свою ссылку командой /invite."
+        )
+        return
+    counts: dict[str, int] = {}
+    for row in rows:
+        referrer = str(row.get("value") or "")
+        counts[referrer] = counts.get(referrer, 0) + 1
+    lines = [f"🤝 <b>Приглашения</b> (всего {len(rows)})", ""]
+    for referrer, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        user = await db.get_user(int(referrer)) if referrer.isdigit() else None
+        name = (user or {}).get("venue") or (user or {}).get("name") or referrer
+        lines.append(f"• {esc(str(name))} привёл {count}")
+    lines.append("")
+    lines.append("Новые приглашённые: " + ", ".join(
+        str(row["key"]).split(":", 1)[1] for row in rows[-5:]
+    ))
+    await message.answer("\n".join(lines))
