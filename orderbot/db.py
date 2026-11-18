@@ -847,6 +847,47 @@ class Database:
             await self.log_event(order_id, "payment", {"method": "credit", "amount": 0})
         return changed
 
+    async def set_cost(
+        self, catalog_id: int, cost: float, source: str = "manager", day: str | None = None
+    ) -> None:
+        """Закупочная цена позиции с даты (по умолчанию с сегодня)."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO cost_prices(catalog_id, cost, valid_from, source) "
+            "VALUES (%s, %s, %s, %s)",
+            (int(catalog_id), round(float(cost), 4), day or datetime.now().date().isoformat(), source),
+        )
+        await self.conn.commit()
+
+    async def costs_map(self) -> dict[int, float]:
+        """Действующая закупочная цена по каждой позиции (последняя запись)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT ON (catalog_id) catalog_id, cost FROM cost_prices "
+            "ORDER BY catalog_id, valid_from DESC, id DESC"
+        )
+        return {int(row["catalog_id"]): float(row["cost"]) for row in await cursor.fetchall()}
+
+    async def cost_on(self, catalog_id: int, day: str) -> float | None:
+        """Закупочная цена, действовавшая на дату."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT cost FROM cost_prices WHERE catalog_id = %s AND valid_from <= %s "
+            "ORDER BY valid_from DESC, id DESC LIMIT 1",
+            (int(catalog_id), day),
+        )
+        row = await cursor.fetchone()
+        return float(row["cost"]) if row else None
+
+    async def cost_history(self, catalog_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT cost, valid_from, source, created_at FROM cost_prices "
+            "WHERE catalog_id = %s ORDER BY valid_from DESC, id DESC LIMIT %s",
+            (int(catalog_id), int(limit)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def client_debt(self, chef_id: int) -> tuple[float, int, int | None]:
         """(сумма долга, число заказов, возраст самого старого долга в днях)."""
         assert self.conn is not None

@@ -352,6 +352,19 @@ async def cmd_price_set(
         return
     item = match[0].item
     old = float(item.price or 0)
+    if old and abs(price - old) / old > 0.3:
+        key = f"price_confirm:{item.id}"
+        if await db.get_setting(key, "") != f"{price}":
+            await db.set_setting(key, f"{price}")
+            direction = "дороже" if price > old else "дешевле"
+            percent = abs(price - old) / old * 100
+            await message.answer(
+                f"⚠️ «{esc(item.name)}» станет {direction} на {percent:.0f}%: "
+                f"{money(old)} → {money(price)}.\n"
+                "Похоже на опечатку. Если всё верно — повторите ту же команду."
+            )
+            return
+        await db.set_setting(key, "")
     item.price = price
     saved = _write_price_to_file(settings.catalog_path, item.id, price)
     await message.answer(
@@ -375,6 +388,7 @@ async def cmd_margin(
     if raw.isdigit():
         days = max(1, min(365, int(raw)))
     catalog = _Catalog.load(settings.catalog_path)
+    costs = await db.costs_map()
     rows = await db.sold_items(days)
     revenue = 0.0
     cost = 0.0
@@ -384,8 +398,11 @@ async def cmd_margin(
         price = float(row.get("price") or 0)
         revenue += qty * price
         item = catalog.get(int(row["catalog_id"])) if row.get("catalog_id") else None
-        if item is not None and item.purchase:
-            cost += qty * float(item.purchase)
+        purchase = costs.get(int(row["catalog_id"])) if row.get("catalog_id") else None
+        if purchase is None and item is not None and item.purchase:
+            purchase = float(item.purchase)
+        if purchase is not None:
+            cost += qty * purchase
         else:
             unknown += 1
     if revenue <= 0:
@@ -402,7 +419,7 @@ async def cmd_margin(
         lines.append("")
         lines.append(
             f"⚠️ По {unknown} позициям нет закупочной цены — "
-            "добавьте колонку «Закупка» в прайс."
+            "задайте её командой /cost позиция цена или колонкой «Закупка» в прайсе."
         )
     await message.answer("\n".join(lines))
 
@@ -546,4 +563,61 @@ async def cmd_credit_terms(
     ]
     if age is not None:
         lines.append(f"Самый старый долг: {age} дн.")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("cost"))
+async def cmd_cost(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Закупочная цена позиции: /cost помидоры 1.10 (в тех же деньгах, что прайс)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    costs = await db.costs_map()
+    if not raw:
+        missing = [item for item in catalog.items if item.id not in costs]
+        lines = [
+            "🧾 <b>Закупочные цены</b>",
+            f"Задано: {len(costs)} из {len(catalog.items)} позиций.",
+            "",
+            "Задать: <code>/cost помидоры 1.10</code>",
+            "Валюта та же, что в прайсе (USD).",
+        ]
+        if missing:
+            names = ", ".join(item.name for item in missing[:8])
+            lines.append("")
+            lines.append(f"Без закупки, например: {names}")
+        await message.answer("\n".join(lines))
+        return
+    parts = raw.rsplit(maxsplit=1)
+    if len(parts) != 2:
+        await message.answer("Формат: <code>/cost помидоры 1.10</code>")
+        return
+    query, raw_cost = parts
+    try:
+        cost = round(float(raw_cost.replace(",", ".").replace("$", "")), 4)
+    except ValueError:
+        await message.answer("Цена закупки должна быть числом, например 1.10")
+        return
+    if cost <= 0 or cost > 100000:
+        await message.answer("Цена вне разумных пределов.")
+        return
+    match = catalog.match(query, limit=1, min_score=60)
+    if not match:
+        await message.answer("Не нашёл такую позицию в прайсе.")
+        return
+    item = match[0].item
+    await db.set_cost(item.id, cost, source="manager")
+    sell = float(item.price or 0)
+    lines = [f"✅ «{esc(item.name)}»: закупка {money(cost)}"]
+    if sell:
+        margin = sell - cost
+        lines.append(f"Продажа {money(sell)} · маржа {money(margin)} ({margin / sell * 100:.0f}%)")
+    if sell and margin <= 0:
+        lines.append("⚠️ Позиция убыточная — проверьте цену продажи.")
     await message.answer("\n".join(lines))
