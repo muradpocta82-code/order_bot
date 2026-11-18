@@ -709,3 +709,19 @@ def client_reply_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="☎️ Менеджер"), KeyboardButton(text="📖 Прайс")],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
+
+
+def claim_actions_keyboard(claim_id: int) -> InlineKeyboardMarkup:
+    """Решение по претензии: заменить, кредит-нота или отклонить."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="🔁 Заменить в след. заказе", callback_data=f"clm:{claim_id}:replace"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="🧾 Кредит-нота", callback_data=f"clm:{claim_id}:credit"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"clm:{claim_id}:reject"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

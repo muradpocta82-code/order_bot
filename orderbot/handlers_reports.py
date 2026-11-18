@@ -22,6 +22,7 @@ from .db import Database
 from .formatting import esc, format_orders_page, money
 from .keyboards import (
     broadcast_confirm_keyboard,
+    claim_actions_keyboard,
     manager_back_keyboard,
     manager_panel_keyboard,
     price_undo_keyboard,
@@ -775,3 +776,155 @@ async def cmd_labels(
     await message.answer_document(
         document, caption=f"🏷 Наклейки на {day}: {len(orders)} шт. Печать на A4, 8 на лист."
     )
+
+
+@router.message(Command("stop"))
+async def cmd_stop_item(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Стоп-лист на сегодня: /stop помидоры — позиция скрывается из заказа."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer("Формат: <code>/stop помидоры</code>. Список: /stoplist")
+        return
+    match = catalog.match(raw, limit=1, min_score=55)
+    if not match:
+        await message.answer("Такой позиции нет в прайсе.")
+        return
+    item = match[0].item
+    await db.set_item_available(item.id, False, 0)
+    await message.answer(
+        f"🚫 «{esc(item.name)}» в стоп-листе: клиентам не предлагается. "
+        f"Вернуть: <code>/unstop {esc(item.name)}</code>"
+    )
+
+
+@router.message(Command("unstop"))
+async def cmd_unstop_item(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer("Формат: <code>/unstop помидоры</code>")
+        return
+    match = catalog.match(raw, limit=1, min_score=55)
+    if not match:
+        await message.answer("Такой позиции нет в прайсе.")
+        return
+    item = match[0].item
+    await db.set_item_available(item.id, True, None)
+    await message.answer(f"✅ «{esc(item.name)}» снова доступна.")
+
+
+@router.message(Command("stoplist"))
+async def cmd_stoplist(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    overrides = await db.stock_overrides()
+    stopped = [
+        item for item in catalog.items
+        if str(item.id) in {str(key) for key in overrides}
+        and not overrides[int(item.id)]["available"]
+    ]
+    if not stopped:
+        await message.answer(
+            "Стоп-лист пуст. Поставить позицию в стоп: <code>/stop помидоры</code>"
+        )
+        return
+    lines = ["🚫 <b>Стоп-лист</b>", ""]
+    for item in stopped:
+        lines.append(f"• {esc(item.name)} — вернуть: <code>/unstop {esc(item.name)}</code>")
+    await message.answer("\n".join(lines))
+
+
+@router.callback_query(F.data.startswith("clm:"))
+async def cb_claim_action(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Решение по претензии: замена, кредит-нота или отказ."""
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        _, raw_claim, action = callback.data.split(":")
+        claim_id = int(raw_claim)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    claim = await db.get_claim(claim_id)
+    if claim is None:
+        await callback.answer("Претензия не найдена", show_alert=True)
+        return
+    if str(claim.get("status")) != "open":
+        await callback.answer(f"Уже закрыта: {claim.get('status')}", show_alert=True)
+        return
+    titles = {
+        "replace": "замена в следующем заказе",
+        "credit": "кредит-нота",
+        "reject": "отказ",
+    }
+    if action not in titles:
+        await callback.answer("Неизвестное решение", show_alert=True)
+        return
+    await db.close_claim(claim_id, action)
+    await db.log_event(
+        int(claim["order_id"]),
+        "claim",
+        {"claim_id": claim_id, "decision": action},
+        actor_id=callback.from_user.id,
+    )
+    try:
+        await callback.message.edit_text(
+            f"Претензия №{claim_id}: <b>{titles[action]}</b>.\n"
+            f"Заказ №{claim['order_id']} · {esc(str(claim.get('text'))[:200])}"
+        )
+    except Exception:
+        pass
+    if claim.get("user_id"):
+        texts = {
+            "replace": "Заменим позицию в следующем заказе — без доплаты.",
+            "credit": "Оформили кредит-ноту: сумма зачтётся в следующем счёте.",
+            "reject": "Рассмотрели обращение и, к сожалению, не нашли подтверждения. "
+                      "Менеджер свяжется, чтобы обсудить.",
+        }
+        try:
+            await callback.bot.send_message(
+                int(claim["user_id"]),
+                f"По обращению №{claim_id} (заказ №{claim['order_id']}): {texts[action]}",
+            )
+        except Exception:
+            pass
+    await callback.answer("Записал решение")
+
+
+@router.message(Command("claims"))
+async def cmd_claims(message: Message, db: Database, settings: Settings) -> None:
+    """Открытые претензии: что ещё не решено."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    rows = await db.open_claims(20)
+    if not rows:
+        await message.answer("Открытых претензий нет.")
+        return
+    lines = [f"⚠️ <b>Открытые претензии: {len(rows)}</b>", ""]
+    for row in rows:
+        lines.append(
+            f"№{row['id']} · заказ №{row['order_id']} · "
+            f"{str(row.get('created_at'))[:16]}\n   {esc(str(row.get('text'))[:200])}"
+        )
+    lines.append("")
+    lines.append("Решение — кнопками в сообщении о претензии.")
+    await message.answer("\n".join(lines))

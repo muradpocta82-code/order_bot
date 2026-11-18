@@ -1106,12 +1106,29 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
-    async def close_claim(self, claim_id: int) -> None:
+    async def close_claim(self, claim_id: int, status: str = "closed") -> None:
+        """Закрывает претензию с итогом: replaced / credit / rejected / closed."""
         assert self.conn is not None
         await self.conn.execute(
-            "UPDATE claims SET status = 'closed' WHERE id = %s", (int(claim_id),)
+            "UPDATE claims SET status = %s WHERE id = %s", (status, int(claim_id))
         )
         await self.conn.commit()
+
+    async def get_claim(self, claim_id: int) -> dict[str, Any] | None:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT * FROM claims WHERE id = %s", (int(claim_id),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def claims_for_order(self, order_id: int) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT * FROM claims WHERE order_id = %s ORDER BY id DESC",
+            (int(order_id),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
     async def set_order_photo(self, order_id: int, file_id: str) -> None:
         assert self.conn is not None

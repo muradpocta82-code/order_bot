@@ -76,6 +76,7 @@ from .keyboards import (
     candidates_keyboard,
     client_back_keyboard,
     client_menu_keyboard,
+    claim_actions_keyboard,
     client_reply_keyboard,
     broadcast_confirm_keyboard,
     client_order_keyboard,
@@ -2816,6 +2817,7 @@ async def _handle_claim(
                 int(manager),
                 f"⚠️ Претензия №{claim_id} по заказу №{order['id']} "
                 f"от {esc(order.get('chef_name') or '')}:\n{esc(text[:800])}",
+                reply_markup=claim_actions_keyboard(claim_id),
             )
         except Exception:
             pass
