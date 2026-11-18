@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -162,6 +163,9 @@ class AIClient:
         self.last_error_at: dict[str, float] = {}
         self.last_ok_at: dict[str, float] = {}
         self.calls_today: dict[str, int] = {"deepseek": 0, "gemini": 0}
+        self._cache: dict[str, tuple[float, "ParsedOrder"]] = {}
+        self._user_calls: dict[int, list[float]] = {}
+        self.budget_blocked = 0
         self._calls_date = date.today()
         self._deepseek = (
             AsyncOpenAI(
@@ -252,17 +256,70 @@ class AIClient:
             catalog="\n".join(catalog_lines),
         )
 
-    async def parse(self, text: str, now: datetime) -> ParsedOrder | None:
+    def _cache_key(self, text: str) -> str:
+        normalized = " ".join(text.lower().split())
+        return hashlib.sha1(
+            f"{normalized}|{len(self.catalog.items)}".encode("utf-8")
+        ).hexdigest()
+
+    def _cache_get(self, key: str) -> "ParsedOrder | None":
+        entry = self._cache.get(key)
+        if not entry:
+            return None
+        created, order = entry
+        if time.time() - created > 7 * 24 * 3600:
+            self._cache.pop(key, None)
+            return None
+        return order
+
+    def _user_allowed(self, user_id: int | None) -> bool:
+        limit = int(getattr(self.settings, "llm_user_hourly", 0) or 0)
+        if not limit or user_id is None:
+            return True
+        now = time.time()
+        stamps = [value for value in self._user_calls.get(user_id, []) if now - value < 3600]
+        self._user_calls[user_id] = stamps
+        return len(stamps) < limit
+
+    def _note_user_call(self, user_id: int | None) -> None:
+        if user_id is None:
+            return
+        self._user_calls.setdefault(user_id, []).append(time.time())
+
+    def _budget_left(self) -> bool:
+        budget = int(getattr(self.settings, "llm_daily_budget", 0) or 0)
+        if not budget:
+            return True
+        used = sum(self.calls_today.values())
+        return used < budget
+
+    async def parse(
+        self, text: str, now: datetime, user_id: int | None = None
+    ) -> ParsedOrder | None:
         today = now.date()
         if self.settings.local_first and self._local_ready(text, now):
             local = parse_local(text, self.settings.timezone, now)
             if local and local.items:
                 log.info("Разбор локальный: %d позиций", len(local.items))
                 return local
+        key = self._cache_key(text)
+        cached = self._cache_get(key)
+        if cached is not None:
+            log.info("Разбор из кэша: %d позиций", len(cached.items))
+            return cached
+        if not self._budget_left():
+            self.budget_blocked += 1
+            log.warning("Дневной бюджет ИИ исчерпан — разбираю локально")
+            return None
+        if not self._user_allowed(user_id):
+            log.warning("Лимит ИИ на пользователя %s исчерпан — разбор локальный", user_id)
+            return None
         if self.deepseek_enabled and self._deepseek is not None:
             payload = await self._deepseek_json(text, today)
             order = self._order_from_payload(payload, text, "deepseek", now)
             if order and order.items:
+                self._note_user_call(user_id)
+                self._cache[key] = (time.time(), order)
                 log.info("Разбор DeepSeek: %d позиций", len(order.items))
                 return order
 
@@ -270,6 +327,8 @@ class AIClient:
             payload = await self._gemini_json(text, today)
             order = self._order_from_payload(payload, text, "gemini", now)
             if order and order.items:
+                self._note_user_call(user_id)
+                self._cache[key] = (time.time(), order)
                 log.info("Разбор Gemini: %d позиций", len(order.items))
                 return order
         return None

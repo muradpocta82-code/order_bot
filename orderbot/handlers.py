@@ -227,11 +227,13 @@ from .roles import (
     load_staff_from_db,
 )
 
-async def _understand(text: str, ai: AIClient, settings: Settings) -> ParsedOrder:
+async def _understand(
+    text: str, ai: AIClient, settings: Settings, user_id: int | None = None
+) -> ParsedOrder:
     now = datetime.now(settings.timezone)
     try:
         parsed = await asyncio.wait_for(
-            ai.parse(text, now), timeout=AI_PARSE_TIMEOUT
+            ai.parse(text, now, user_id=user_id), timeout=AI_PARSE_TIMEOUT
         )
     except asyncio.TimeoutError:
         log.warning(
@@ -651,7 +653,9 @@ async def _process_order_serial(
         except Exception:
             log.debug("Не удалось показать расшифровку", exc_info=True)
     try:
-        parsed = await _understand(text, ai, settings)
+        parsed = await _understand(
+            text, ai, settings, user_id=message.from_user.id
+        )
         if not parsed.items:
             await status.edit_text(NO_ITEMS_TEXT)
             return
