@@ -665,3 +665,35 @@ def reason_label(code: str) -> str:
         if key == code:
             return label
     return "без причины"
+
+
+RATING_REASONS = (
+    ("late", "⏰ Опоздали"),
+    ("weight", "⚖️ Недовес"),
+    ("quality", "🥬 Качество"),
+    ("polite", "🙂 Вежливость"),
+    ("other", "❓ Другое"),
+)
+
+
+def rating_reason_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Почему низкая оценка: кнопки вместо разговора."""
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for code, label in RATING_REASONS:
+        row.append(
+            InlineKeyboardButton(text=label, callback_data=f"rrate:{order_id}:{code}")
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def rating_reason_label(code: str) -> str:
+    for key, label in RATING_REASONS:
+        if key == code:
+            return label
+    return "без причины"

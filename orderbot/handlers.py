@@ -81,6 +81,8 @@ from .keyboards import (
     contact_keyboard,
     location_keyboard,
     rating_keyboard,
+    rating_reason_keyboard,
+    rating_reason_label,
     weigh_confirm_keyboard,
     courier_back_keyboard,
     courier_panel_keyboard,
@@ -500,7 +502,11 @@ async def _advance_draft(
             )
             return True
         if not fresh.get("delivery_time"):
-            slots = parse_slots(await db.get_setting("delivery_slots"))
+            slots, busy = await _slots_with_capacity(db, fresh.get("delivery_date"))
+            labels = [
+                (f"🚫 {label} — занято" if start in busy else label)
+                for (start, _), label in zip(slots, slot_labels(slots))
+            ]
             await db.save_draft(fresh)
             await _edit_panel(
                 bot,
@@ -508,7 +514,7 @@ async def _advance_draft(
                 message_id,
                 "Когда удобно привезти? Выберите интервал — упаковщик будет знать, "
                 "к какому времени собирать заказ.",
-                slots_keyboard(fresh["id"], slot_labels(slots)),
+                slots_keyboard(fresh["id"], labels),
             )
             return True
 
@@ -1785,6 +1791,32 @@ async def cb_unit(
     )
 
 
+async def _slots_with_capacity(
+    db: Database, day: str | None
+) -> tuple[list[tuple[str, str]], set[str]]:
+    """Интервалы доставки и занятые слоты (лимит — настройка slot_capacity).
+
+    Список не сокращается, чтобы индексы кнопок не съезжали: занятый слот
+    показывается отдельной пометкой и не принимается при нажатии.
+    """
+    slots = parse_slots(await db.get_setting("delivery_slots"))
+    try:
+        capacity = int(await db.get_setting("slot_capacity", "0") or 0)
+    except ValueError:
+        capacity = 0
+    if capacity <= 0:
+        return slots, set()
+    target = (day or datetime.now().date().isoformat())[:10]
+    counts: dict[str, int] = {}
+    for order in await db.orders_for_date(target):
+        if str(order.get("status")) == "cancelled":
+            continue
+        key = str(order.get("delivery_time") or "")[:5]
+        counts[key] = counts.get(key, 0) + 1
+    busy = {start for start, _end in slots if counts.get(start, 0) >= capacity}
+    return slots, busy
+
+
 @router.callback_query(F.data.startswith("slot:"))
 async def cb_slot(
     callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
@@ -1798,11 +1830,16 @@ async def cb_slot(
     draft = await _load_draft_for_callback(callback, draft_id, db)
     if draft is None:
         return
-    slots = parse_slots(await db.get_setting("delivery_slots"))
+    slots, busy = await _slots_with_capacity(db, draft.get("delivery_date"))
     if not 0 <= idx < len(slots):
         await callback.answer("Этот интервал больше недоступен", show_alert=True)
         return
     start, end = slots[idx]
+    if start in busy:
+        await callback.answer(
+            "На этот интервал уже много заказов. Выберите другой.", show_alert=True
+        )
+        return
     draft["delivery_time"] = start
     draft["delivery_slot"] = f"{start}-{end}"
     await db.save_draft(draft)
@@ -2341,6 +2378,41 @@ async def _handle_delivery_pin(
     return True
 
 
+@router.callback_query(F.data.startswith("rrate:"))
+async def cb_rate_reason(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Причина низкой оценки: пишется в историю заказа и уходит упаковщику."""
+    try:
+        _, _tag, raw_order, code = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    label = rating_reason_label(code)
+    await db.log_event(
+        order_id,
+        "rating_reason",
+        {"reason": code, "label": label},
+        actor_id=callback.from_user.id,
+    )
+    try:
+        await callback.message.edit_text(f"Спасибо, передали: {label}.")
+    except TelegramBadRequest:
+        pass
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                f"⚠️ Заказ №{order_id}: клиент недоволен — {label}. "
+                "Стоит позвонить и разобраться.",
+            )
+        except Exception:
+            pass
+    await callback.answer("Записали")
+
+
 @router.callback_query(F.data.startswith("rate:"))
 async def cb_rate(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     try:
@@ -2353,6 +2425,16 @@ async def cb_rate(callback: CallbackQuery, db: Database, settings: Settings) -> 
         await callback.answer("Оценка от 1 до 5", show_alert=True)
         return
     await db.set_order_rating(order_id, value)
+    if value <= 3:
+        try:
+            await callback.message.edit_text(
+                f"Спасибо за оценку: {'⭐' * value}. Что было не так?",
+                reply_markup=rating_reason_keyboard(order_id),
+            )
+        except TelegramBadRequest:
+            pass
+        await callback.answer()
+        return
     try:
         await callback.message.edit_text(f"Спасибо за оценку: {'⭐' * value}")
     except TelegramBadRequest:

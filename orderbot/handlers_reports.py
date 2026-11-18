@@ -16,6 +16,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 from .catalog import Catalog
+from .labels import build_labels, today_label
 from .config import Settings
 from .db import Database
 from .formatting import esc, format_orders_page, money
@@ -736,4 +737,41 @@ async def cmd_for_client(
     await message.answer(
         f"📞 Оформляем заказ за клиента: <b>{esc(name)}</b> ({esc(venue)}).\n"
         "Пришлите текст заказа одним сообщением. Отменить: /for off"
+    )
+
+
+@router.message(Command("labels"))
+async def cmd_labels(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Наклейки на коробки: /labels (завтра) или /labels 2026-11-20."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from datetime import datetime, timedelta
+
+    now = datetime.now(settings.timezone)
+    raw = (command.args or "").strip().lower()
+    if raw in ("", "завтра", "tomorrow"):
+        day = (now.date() + timedelta(days=1)).isoformat()
+    elif raw in ("сегодня", "today"):
+        day = now.date().isoformat()
+    else:
+        try:
+            day = datetime.fromisoformat(raw).date().isoformat()
+        except ValueError:
+            await message.answer("Формат: /labels, /labels сегодня или /labels 2026-11-20")
+            return
+    orders = [
+        order
+        for order in await db.orders_for_date(day)
+        if str(order.get("status")) != "cancelled"
+    ]
+    if not orders:
+        await message.answer(f"На {day} заказов нет — наклейки не нужны.")
+        return
+    from aiogram.types import BufferedInputFile
+
+    document = BufferedInputFile(build_labels(orders, day), filename=today_label(day, len(orders)))
+    await message.answer_document(
+        document, caption=f"🏷 Наклейки на {day}: {len(orders)} шт. Печать на A4, 8 на лист."
     )
