@@ -12,6 +12,7 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from .config import Settings
@@ -24,7 +25,7 @@ from .keyboards import (
     courier_status_keyboard,
     manager_status_keyboard,
 )
-from .keyboards import rating_keyboard
+from .keyboards import fail_reason_keyboard, rating_keyboard, reason_label
 from .formatting import format_client_order
 from .notify import (
     _close_order_cards,
@@ -286,12 +287,42 @@ async def cb_courier_fail(
     if order is None or not _courier_order_allowed(order, callback.from_user.id):
         await callback.answer("Заказ не найден", show_alert=True)
         return
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=fail_reason_keyboard(order_id)
+        )
+    except (TelegramBadRequest, AttributeError):
+        pass
+    await callback.answer("Выберите причину")
+    return
+
+
+@router.callback_query(F.data.startswith("failr:"))
+async def cb_courier_fail_reason(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Недоставка с причиной: причина попадает в историю заказа."""
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        _, _tag, raw_order, code = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or not _courier_order_allowed(order, callback.from_user.id):
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
     if not await db.mark_order_failed(order_id):
         await callback.answer("Заказ уже закрыт", show_alert=True)
         return
+    await db.log_event(
+        order_id, "failed", {"reason": code, "label": reason_label(code)}, actor_id=callback.from_user.id
+    )
     order = await db.get_order(order_id)
     assert order is not None
-    await _edit_courier_card(callback, order, "⚠️ Не доставлено", None)
+    await _edit_courier_card(callback, order, f"⚠️ Не доставлено: {reason_label(code)}", None)
     manager = _manager_chat(settings)
     await _drop_card_buttons(
         callback.bot, manager, order.get("manager_card_message_id")
@@ -300,7 +331,7 @@ async def cb_courier_fail(
         try:
             await callback.bot.send_message(
                 manager,
-                f"⚠️ Заказ №{order_id} не доставлен. Свяжитесь с клиентом.",
+                f"⚠️ Заказ №{order_id} не доставлен. Причина: {reason_label(code)}.",
             )
         except Exception:
             log.debug("Не удалось уведомить упаковщика о сбое №%s", order_id)
@@ -314,3 +345,21 @@ async def cb_courier_fail(
         except Exception:
             log.warning("Не удалось уведомить клиента о сбое №%s", order_id)
     await callback.answer("Отмечено")
+
+
+@router.message(Command("handover"))
+async def cmd_handover(message: Message, db: Database, settings: Settings) -> None:
+    """Сдача кассы: курьер жмёт команду и вводит сумму наличных за день."""
+    if not (_is_courier(settings, message.from_user.id, message.chat.id) or _is_manager(
+        settings, message.from_user.id, message.chat.id
+    )):
+        return
+    day = datetime.now(settings.timezone).date().isoformat()
+    report = await db.cash_report(day)
+    await db.set_chat_state(message.chat.id, "cash_handover", day)
+    await message.answer(
+        f"💵 Сдача кассы за {day}.\n"
+        f"По заказам наличными ожидается: <b>{money(report['expected'])}</b> "
+        f"({len(report['orders'])} заказ(ов)).\n"
+        "Пришлите сумму, которую сдаёте (числом). Отмена: /cancel"
+    )

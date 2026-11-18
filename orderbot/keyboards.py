@@ -631,3 +631,37 @@ def morning_price_keyboard(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔕 Не присылать", callback_data=f"priceoff:{user_id}")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+FAIL_REASONS = (
+    ("place", "🚪 Не на месте"),
+    ("refuse", "🙅 Клиент отказался"),
+    ("money", "💸 Нет оплаты"),
+    ("address", "🗺 Не нашли адрес"),
+)
+
+
+def fail_reason_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Причина недоставки: одна кнопка вместо разговора по телефону."""
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for code, label in FAIL_REASONS:
+        row.append(
+            InlineKeyboardButton(text=label, callback_data=f"failr:{order_id}:{code}")
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [InlineKeyboardButton(text="↩️ Назад", callback_data=f"cour:card:{order_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reason_label(code: str) -> str:
+    for key, label in FAIL_REASONS:
+        if key == code:
+            return label
+    return "без причины"

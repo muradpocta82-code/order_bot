@@ -403,6 +403,48 @@ async def _handle_text_edit(
     return True
 
 
+async def _handle_handover(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    """Курьер сдаёт кассу: сумма сравнивается с ожидаемой по наличным за день."""
+    day = await db.get_chat_state(message.chat.id, "cash_handover")
+    if not day:
+        return False
+    raw = text.replace(" ", "").replace(",", ".").replace("$", "").strip()
+    try:
+        amount = round(float(raw), 2)
+    except ValueError:
+        await message.answer(
+            "Пришлите сумму числом, например 250.00 (или /cancel для отмены)."
+        )
+        return True
+    await db.clear_chat_state(message.chat.id, "cash_handover")
+    report = await db.cash_report(day)
+    expected = float(report["expected"])
+    delta = amount - expected
+    await db.set_setting(f"cash_handover:{day}", f"{amount:.2f}")
+    await db.set_setting(f"cash_handover_at:{day}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    lines = [
+        f"💵 Касса за {day} сдана: {money(amount)}",
+        f"Ожидалось по заказам: {money(expected)}",
+        f"Расхождение: {money(delta)}",
+    ]
+    if abs(delta) > 0.01:
+        lines.append("⚠️ Есть расхождение — менеджер увидит его в /cash.")
+    await message.answer("\n".join(lines))
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await message.bot.send_message(
+                int(manager),
+                f"💵 Курьер сдал кассу за {day}: {money(amount)} "
+                f"(ожидалось {money(expected)}, расхождение {money(delta)}).",
+            )
+        except Exception:
+            pass
+    return True
+
+
 async def _handle_for_client(
     message: Message,
     text: str,
@@ -455,6 +497,8 @@ async def on_text(
 ) -> None:
     text = (message.text or "").strip()
     if await _handle_delivery_pin(message, text, db, settings):
+        return
+    if await _handle_handover(message, text, db, settings):
         return
     if await _handle_cash_amount(message, text, db, settings):
         return

@@ -2487,6 +2487,20 @@ async def cmd_cash(message: Message, db: Database, settings: Settings) -> None:
     lines.append(f"Получено: <b>{money(report['received'])}</b>")
     delta = report["received"] - report["expected"]
     lines.append(f"Расхождение: <b>{money(delta)}</b>")
+    handed = await db.get_setting(f"cash_handover:{day}", "")
+    if handed:
+        when = await db.get_setting(f"cash_handover_at:{day}", "")
+        try:
+            diff = float(handed) - float(report["expected"])
+        except ValueError:
+            diff = 0.0
+        lines.append(
+            f"Сдано курьером: <b>{money(float(handed))}</b>"
+            + (f" ({when[11:16]})" if when else "")
+            + f" · расхождение {money(diff)}"
+        )
+    else:
+        lines.append("<i>Курьер ещё не сдал кассу (/handover)</i>")
     if report["diff"]:
         lines.append("")
         lines.append("<b>Расхождения по заказам</b>")
