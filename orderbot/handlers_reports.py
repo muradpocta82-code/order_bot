@@ -705,3 +705,35 @@ async def cmd_note(
         return
     await db.set_setting(f"client_note:{chef_id}", text[:300])
     await message.answer(f"✅ Заметка сохранена и будет видна в карточках заказов клиента {chef_id}.")
+
+
+@router.message(Command("for"))
+async def cmd_for_client(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Заказ за клиента (звонок/WhatsApp): /for ID, далее — текст заказа."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    arg = (command.args or "").strip()
+    if arg.lower() in ("off", "стоп", "нет", "отмена"):
+        await db.clear_chat_state(message.chat.id, "for_client")
+        await message.answer("Режим «заказ за клиента» выключен.")
+        return
+    if not arg.isdigit():
+        await message.answer(
+            "Формат: <code>/for ID</code> — дальше пишете заказ текстом за этого клиента.\n"
+            "ID клиента виден в карточке заказа и в /debt.\n"
+            "Отменить: <code>/for off</code>"
+        )
+        return
+    user = await db.get_user(int(arg))
+    if user is None:
+        await message.answer("Такого клиента нет. Проверьте id.")
+        return
+    await db.set_chat_state(message.chat.id, "for_client", arg)
+    name = user.get("name") or arg
+    venue = user.get("venue") or "—"
+    await message.answer(
+        f"📞 Оформляем заказ за клиента: <b>{esc(name)}</b> ({esc(venue)}).\n"
+        "Пришлите текст заказа одним сообщением. Отменить: /for off"
+    )

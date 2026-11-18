@@ -16,7 +16,7 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, User
 
 from .ai import AIClient
 from .catalog import Catalog
@@ -403,6 +403,48 @@ async def _handle_text_edit(
     return True
 
 
+async def _handle_for_client(
+    message: Message,
+    text: str,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    ai: AIClient,
+) -> bool:
+    """Заказ за клиента: менеджер принял звонок и вводит текст как этот клиент."""
+    raw = await db.get_chat_state(message.chat.id, "for_client")
+    if not raw or not str(raw).strip().isdigit():
+        return False
+    user_id = int(str(raw).strip())
+    user = await db.get_user(user_id)
+    await db.clear_chat_state(message.chat.id, "for_client")
+    if user is None:
+        await message.answer("Клиент не найден — режим «заказ за клиента» выключен.")
+        return True
+    fake_user = User(
+        id=user_id,
+        is_bot=False,
+        first_name=(user.get("name") or "Клиент")[:64],
+        username=user.get("username") or None,
+    )
+    proxy = message.model_copy(update={"from_user": fake_user})
+    await message.answer(
+        f"📞 Оформляю заказ за {user.get('name') or user_id}. "
+        "Дальше как обычно: уточнения и подтверждение придут сюда."
+    )
+    await _process_order(
+        message=proxy,
+        text=text,
+        source="manager",
+        transcript=None,
+        db=db,
+        settings=settings,
+        catalog=catalog,
+        ai=ai,
+    )
+    return True
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(
     message: Message,
@@ -422,6 +464,8 @@ async def on_text(
         await message.answer("Напишите заказ, например: «2 кг куриного филе, завтра».")
         return
     if _is_manager(settings, message.from_user.id, message.chat.id):
+        if await _handle_for_client(message, text, db, settings, catalog, ai):
+            return
         if await _handle_weigh(message, text, db, settings):
             return
         await message.answer(MANAGER_ONLY_TEXT, reply_markup=manager_panel_keyboard())
