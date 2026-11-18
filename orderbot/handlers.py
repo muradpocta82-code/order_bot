@@ -76,6 +76,7 @@ from .keyboards import (
     candidates_keyboard,
     client_back_keyboard,
     client_menu_keyboard,
+    client_reply_keyboard,
     broadcast_confirm_keyboard,
     client_order_keyboard,
     contact_keyboard,
@@ -763,6 +764,10 @@ async def cmd_start(
     await message.answer(
         f"Здравствуйте! Заведение: <b>{esc(user['venue'])}</b>.\n\n{START_TEXT}",
         reply_markup=client_menu_keyboard(usually, catalog),
+    )
+    await message.answer(
+        "Кнопки внизу помогут быстрее: «Мои заказы», «Как обычно», «Менеджер».",
+        reply_markup=client_reply_keyboard(),
     )
 
 

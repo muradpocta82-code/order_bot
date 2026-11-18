@@ -58,6 +58,7 @@ from .keyboards import (
     candidates_keyboard,
     client_back_keyboard,
     client_menu_keyboard,
+    client_reply_keyboard,
     client_order_keyboard,
     edit_confirm_keyboard,
     qty_keyboard,
@@ -77,7 +78,7 @@ from .notify import (
     _take_retry,
 )
 from .onboarding import _user_access_gate
-from .roles import _back_keyboard, _is_manager, _is_staff
+from .roles import _back_keyboard, _is_courier, _is_manager, _is_staff
 
 # Часть функций осталась в handlers.py; берём их по требованию,
 # чтобы не получилось кольцевого импорта при загрузке модуля.
@@ -403,6 +404,111 @@ async def _handle_text_edit(
     return True
 
 
+async def _handle_client_button(
+    message: Message, text: str, db: Database, settings: Settings, catalog: Catalog
+) -> bool:
+    """Постоянные кнопки клиента: «Мои заказы», «Как обычно», «Менеджер», «Прайс»."""
+    if _is_manager(settings, message.from_user.id, message.chat.id) or _is_courier(
+        settings, message.from_user.id, message.chat.id
+    ):
+        return False
+
+    waiting = await db.get_chat_state(message.chat.id, "client_message")
+    if waiting is not None and waiting != "":
+        await db.clear_chat_state(message.chat.id, "client_message")
+        manager = settings.manager_chat_id
+        if manager:
+            try:
+                await message.bot.send_message(
+                    int(manager),
+                    f"💬 Сообщение от клиента "
+                    f"{message.from_user.full_name}"
+                    f" (id {message.from_user.id}):\n\n{text}",
+                )
+            except Exception:
+                pass
+        await message.answer("Передал менеджеру, он ответит здесь же.")
+        return True
+
+    if text == "📦 Мои заказы":
+        orders = await db.orders_for_client(message.from_user.id, 5)
+        if not orders:
+            await message.answer(
+                "Заказов пока нет. Напишите, что нужно привезти, — например: "
+                "«2 кг помидоров, 1 кг лука, завтра»."
+            )
+            return True
+        status_names = {
+            "new": "ждёт сборки",
+            "accepted": "собираем",
+            "ready": "собран",
+            "delivering": "в пути",
+            "done": "доставлен",
+            "cancelled": "отменён",
+            "failed": "не доставлен",
+        }
+        lines = ["📦 <b>Ваши последние заказы</b>", ""]
+        for order in orders:
+            status = status_names.get(str(order.get("status")), str(order.get("status")))
+            lines.append(
+                f"№{order['id']} · {money(order.get('total'))} · {status}\n"
+                f"   доставка {str(order.get('delivery_date') or '—')[:10]}"
+            )
+        lines.append("")
+        lines.append("Повторить заказ можно кнопкой «🔁 Как обычно».")
+        await message.answer("\n".join(lines))
+        return True
+
+    if text == "🔁 Как обычно":
+        usual = await db.usual_items(message.from_user.id)
+        if not usual:
+            await message.answer(
+                "Пока не знаю ваших обычных позиций — сделайте первый заказ, "
+                "дальше смогу повторять его одной кнопкой."
+            )
+            return True
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Собрать как обычно",
+                        callback_data=f"rday:yes:{message.from_user.id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(text="✏️ Изменить", callback_data="cl:menu"),
+                    InlineKeyboardButton(text="📖 Каталог", callback_data="cl:price"),
+                ],
+            ]
+        )
+        names = ", ".join(str(entry.get("name")) for entry in usual[:6])
+        await message.answer(
+            f"Повторим прошлый заказ? Обычно вы берёте: {names}.", reply_markup=keyboard
+        )
+        return True
+
+    if text == "☎️ Менеджер":
+        await db.set_chat_state(message.chat.id, "client_message", "1")
+        await message.answer(
+            "Напишите сообщение для менеджера одним текстом — он ответит здесь же."
+        )
+        return True
+
+    if text == "📖 Прайс":
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Список товаров", callback_data="cl:price")]
+            ]
+        )
+        await message.answer("Прайс с ценами:", reply_markup=keyboard)
+        return True
+    return False
+
+
 async def _handle_handover(
     message: Message, text: str, db: Database, settings: Settings
 ) -> bool:
@@ -496,6 +602,8 @@ async def on_text(
     ai: AIClient,
 ) -> None:
     text = (message.text or "").strip()
+    if await _handle_client_button(message, text, db, settings, catalog):
+        return
     if await _handle_delivery_pin(message, text, db, settings):
         return
     if await _handle_handover(message, text, db, settings):

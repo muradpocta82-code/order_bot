@@ -697,3 +697,15 @@ def rating_reason_label(code: str) -> str:
         if key == code:
             return label
     return "без причины"
+
+
+CLIENT_REPLY_BUTTONS = ("📦 Мои заказы", "🔁 Как обычно", "☎️ Менеджер", "📖 Прайс")
+
+
+def client_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянные кнопки под полем ввода: на кухне печатать неудобно."""
+    rows = [
+        [KeyboardButton(text="📦 Мои заказы"), KeyboardButton(text="🔁 Как обычно")],
+        [KeyboardButton(text="☎️ Менеджер"), KeyboardButton(text="📖 Прайс")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)

@@ -705,6 +705,18 @@ class Database:
         row = await cursor.fetchone()
         return float(row["s"]) if row else 0.0
 
+    async def orders_for_client(
+        self, chef_id: int, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Последние заказы клиента — для кнопки «Мои заказы»."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, created_at, delivery_date, delivery_time, total, status, "
+            "payment_status FROM orders WHERE chef_id = %s ORDER BY id DESC LIMIT %s",
+            (int(chef_id), int(limit)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def last_order_for_user(self, user_id: int) -> dict[str, Any] | None:
         assert self.conn is not None
         cursor = await self.conn.execute(

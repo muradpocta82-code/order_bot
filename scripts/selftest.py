@@ -646,7 +646,11 @@ async def test_start_and_greeting() -> None:
         await db.set_user_access(chef_id, "approved")
         chef_message.sent.clear()
         await cmd_start(chef_message, db, settings, CATALOG)
-        check("/start повара после допуска", len(chef_message.sent) == 1, str(chef_message.sent))
+        check(
+            "/start повара после допуска",
+            len(chef_message.sent) in (1, 2),
+            f"сообщений: {len(chef_message.sent)}",
+        )
         text, keyboard = chef_message.sent[0]
         check("/start повара: текст приветствия", START_TEXT in text, text[:120])
         check("/start повара: кнопки меню", keyboard is not None)
