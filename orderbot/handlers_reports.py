@@ -82,6 +82,25 @@ async def cb_credit(callback: CallbackQuery, db: Database, settings: Settings) -
     if order is None:
         await callback.answer("Заказ не найден", show_alert=True)
         return
+    chef_id = int(order.get("chef_id") or 0)
+    if chef_id:
+        user = await db.get_user(chef_id)
+        limit = float(user.get("credit_limit") or 0) if user else 0.0
+        if limit:
+            debt, _count, _age = await db.client_debt(chef_id)
+            total = float(order.get("total") or 0)
+            if debt + total > limit:
+                confirm_key = f"credit_confirm:{order_id}"
+                already = await db.get_setting(confirm_key, "")
+                if not already:
+                    await db.set_setting(confirm_key, "1")
+                    await callback.answer(
+                        f"⚠️ Лимит долга превышен: долг {money(debt)} + заказ {money(total)} "
+                        f"больше лимита {money(limit)}. Нажмите ещё раз, если всё равно в долг.",
+                        show_alert=True,
+                    )
+                    return
+                await db.set_setting(confirm_key, "")
     if not await db.mark_order_credit(order_id, float(order.get("total") or 0)):
         await callback.answer("Нельзя: заказ уже оплачен или закрыт", show_alert=True)
         return
@@ -108,9 +127,23 @@ async def cmd_debt(message: Message, db: Database, settings: Settings) -> None:
     total = 0.0
     for row in rows:
         total += float(row["s"])
+        user = await db.get_user(int(row["chef_id"])) if row.get("chef_id") else None
+        limit = float(user.get("credit_limit") or 0) if user else 0.0
+        days = int(user.get("credit_days") or 0) if user else 0
+        note = []
+        if limit:
+            note.append(f"лимит {money(limit)}")
+        if days:
+            debt, _n, age = await db.client_debt(int(row["chef_id"]))
+            if age is not None:
+                if age > days:
+                    note.append(f"⚠️ просрочка {age - days} дн. (срок {days})")
+                else:
+                    note.append(f"срок {days} дн.")
+        suffix = (" · " + "; ".join(note)) if note else ""
         lines.append(
             f"• {esc(row.get('chef_name') or row['chef_id'])} — "
-            f"{money(row['s'])} ({row['n']} зак., с {str(row.get('since'))[:10]})\n"
+            f"{money(row['s'])} ({row['n']} зак., с {str(row.get('since'))[:10]}){suffix}\n"
             f"  id: <code>{row['chef_id']}</code>"
         )
     lines.append("")
@@ -479,3 +512,38 @@ async def cmd_buylist(
         buylist_xlsx(rows, day), filename=f"zakupka-{day}.xlsx"
     )
     await message.answer_document(document, caption=f"Закупка на {day} — Excel")
+
+
+@router.message(Command("credit_terms"))
+async def cmd_credit_terms(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Условия отсрочки клиента: /credit_terms ID ЛИМИТ ДНЕЙ (0 — без ограничения)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").split()
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/credit_terms ID ЛИМИТ ДНЕЙ</code>\n"
+            "Пример: <code>/credit_terms 123456789 300 14</code> — долг до $300, оплата за 14 дней.\n"
+            "Чтобы убрать ограничения: <code>/credit_terms ID 0 0</code>"
+        )
+        return
+    chef_id = int(parts[0])
+    try:
+        limit = float(parts[1].replace(",", "."))
+        days = int(parts[2])
+    except ValueError:
+        await message.answer("Лимит и срок должны быть числами.")
+        return
+    await db.set_credit_terms(chef_id, limit or None, days or None)
+    debt, count, age = await db.client_debt(chef_id)
+    lines = [
+        f"✅ Условия отсрочки для <code>{chef_id}</code> обновлены.",
+        f"Лимит: {money(limit) if limit else 'без ограничения'}",
+        f"Срок оплаты: {days} дн." if days else "Срок оплаты: не задан",
+        f"Текущий долг: {money(debt)} ({count} зак.)",
+    ]
+    if age is not None:
+        lines.append(f"Самый старый долг: {age} дн.")
+    await message.answer("\n".join(lines))

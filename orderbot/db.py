@@ -847,6 +847,43 @@ class Database:
             await self.log_event(order_id, "payment", {"method": "credit", "amount": 0})
         return changed
 
+    async def client_debt(self, chef_id: int) -> tuple[float, int, int | None]:
+        """(сумма долга, число заказов, возраст самого старого долга в днях)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(SUM(total), 0) AS s, COUNT(*) AS n, "
+            "MIN(created_at) AS oldest FROM orders "
+            "WHERE chef_id = %s AND payment_status = 'credit'",
+            (int(chef_id),),
+        )
+        row = await cursor.fetchone()
+        if not row or not int(row["n"] or 0):
+            return 0.0, 0, None
+        oldest = row.get("oldest")
+        age: int | None = None
+        if oldest is not None:
+            try:
+                moment = oldest
+                if isinstance(moment, str):
+                    moment = datetime.fromisoformat(moment[:19])
+                if getattr(moment, "tzinfo", None) is not None:
+                    moment = moment.replace(tzinfo=None)
+                age = (datetime.now() - moment).days
+            except (TypeError, ValueError):
+                age = None
+        return float(row["s"] or 0), int(row["n"] or 0), age
+
+    async def set_credit_terms(
+        self, chef_id: int, limit: float | None, days: int | None
+    ) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "UPDATE users SET credit_limit = %s, credit_days = %s, updated_at = %s "
+            "WHERE user_id = %s",
+            (limit, days, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(chef_id)),
+        )
+        await self.conn.commit()
+
     async def credit_orders(self) -> list[dict[str, Any]]:
         """Заказы в долг — для отчёта по возрасту задолженности."""
         assert self.conn is not None

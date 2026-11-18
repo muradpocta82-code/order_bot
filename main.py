@@ -23,7 +23,7 @@ from orderbot.catalog import Catalog
 from orderbot.config import Settings, load_settings
 from orderbot.db import Database
 from orderbot.extras import tomorrow_summary, weekly_report
-from orderbot.formatting import set_local_rate
+from orderbot.formatting import money, set_local_rate
 from orderbot.handlers import (
     _send_order_card,
     load_staff_from_db,
@@ -571,6 +571,52 @@ async def _evening_loop(bot: Bot, db: Database, settings: Settings) -> None:
             log.warning("Ошибка вечерней сводки: %s", exc)
 
 
+async def _debt_reminders(bot: Bot, db: Database, settings: Settings) -> int:
+    """Напоминания должникам, у которых вышел срок оплаты. Не чаще раза в день."""
+    now = datetime.now(settings.timezone)
+    if now.hour < 10:
+        return 0
+    today = now.date().isoformat()
+    if await db.get_setting("last_debt_reminder") == today:
+        return 0
+    try:
+        default_days = int(await db.get_setting("debt_default_days", "14") or 14)
+    except ValueError:
+        default_days = 14
+    sent = 0
+    for row in await db.debt_list():
+        chef_id = int(row["chef_id"])
+        user = await db.get_user(chef_id)
+        days = int(user.get("credit_days") or 0) if user else 0
+        term = days or default_days
+        debt, count, age = await db.client_debt(chef_id)
+        if age is None or age <= term:
+            continue
+        try:
+            await bot.send_message(
+                chef_id,
+                f"Напоминание об оплате: {money(debt)} за {count} заказ(ов), "
+                f"самый ранний — {age} дней назад.\n"
+                "Если оплата уже отправлена — напишите менеджеру, отметим.",
+            )
+            sent += 1
+        except Exception as exc:
+            log.warning("Напоминание о долге не отправлено %s: %s", chef_id, exc)
+    await db.set_setting("last_debt_reminder", today)
+    if sent:
+        log.info("Напоминания о долге отправлены: %s", sent)
+    return sent
+
+
+async def _debt_reminder_loop(bot: Bot, db: Database, settings: Settings) -> None:
+    while True:
+        try:
+            await _debt_reminders(bot, db, settings)
+        except Exception as exc:
+            log.warning("Ошибка напоминаний о долге: %s", exc)
+        await asyncio.sleep(2 * 3600)
+
+
 async def _price_morning_loop(
     bot: Bot, db: Database, settings: Settings, catalog: Catalog
 ) -> None:
@@ -999,6 +1045,9 @@ async def run() -> int:
     morning_task = asyncio.create_task(
         _morning_loop(bot, db, settings), name="morning-summary"
     )
+    debt_task = asyncio.create_task(
+        _debt_reminder_loop(bot, db, settings), name="debt-reminders"
+    )
     price_task = asyncio.create_task(
         _price_morning_loop(bot, db, settings, catalog), name="price-morning"
     )
@@ -1044,6 +1093,7 @@ async def run() -> int:
             evening_task,
             morning_task,
             price_task,
+            debt_task,
             weekly_task,
             reminder_task,
             verify_task,
