@@ -725,3 +725,34 @@ def claim_actions_keyboard(claim_id: int) -> InlineKeyboardMarkup:
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def pack_checklist_keyboard(
+    order_id: int, items: list[dict], checked: set[str]
+) -> InlineKeyboardMarkup:
+    """Чек-лист сборки: тап по строке отмечает позицию собранной."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, item in enumerate(items):
+        if item.get("status") == "skipped":
+            continue
+        qty = format_qty(item.get("qty"))
+        unit = plural(item.get("unit"), item.get("qty"))
+        name = str(item.get("name") or item.get("raw") or "позиция")[:28]
+        mark = "✅" if str(index) in checked else "⬜"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark} {name} {qty} {unit}"[:60],
+                    callback_data=f"chk:{order_id}:{index}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔄 Обновить", callback_data=f"chk:{order_id}:refresh"
+            ),
+            InlineKeyboardButton(text="🏠 Панель", callback_data="mp:panel"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

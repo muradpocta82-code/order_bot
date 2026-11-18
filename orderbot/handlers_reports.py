@@ -23,6 +23,7 @@ from .formatting import esc, format_orders_page, money
 from .keyboards import (
     broadcast_confirm_keyboard,
     claim_actions_keyboard,
+    pack_checklist_keyboard,
     manager_back_keyboard,
     manager_panel_keyboard,
     price_undo_keyboard,
@@ -1008,3 +1009,81 @@ async def cmd_refs(message: Message, db: Database, settings: Settings) -> None:
         str(row["key"]).split(":", 1)[1] for row in rows[-5:]
     ))
     await message.answer("\n".join(lines))
+
+
+async def _checked_items(db: Database, order_id: int) -> set[str]:
+    raw = await db.get_setting(f"packed:{order_id}", "") or ""
+    return {part for part in raw.split(",") if part}
+
+
+@router.message(Command("pack"))
+async def cmd_pack(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Чек-лист сборки: /pack 47 — отмечать позиции тапом."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().lstrip("№#")
+    if not raw.isdigit():
+        await message.answer(
+            "Формат: <code>/pack 47</code> — чек-лист сборки по номеру заказа."
+        )
+        return
+    order_id = int(raw)
+    order = await db.get_order(order_id)
+    if order is None:
+        await message.answer("Заказ не найден.")
+        return
+    checked = await _checked_items(db, order_id)
+    items = order.get("items") or []
+    done = sum(1 for index, _ in enumerate(items) if str(index) in checked)
+    await message.answer(
+        f"🧺 <b>Сборка заказа №{order_id}</b> — {esc(order.get('chef_name') or '')}\n"
+        f"Слот: {esc(str(order.get('delivery_time') or '—'))} · "
+        f"собрано {done} из {len(items)}",
+        reply_markup=pack_checklist_keyboard(order_id, items, checked),
+    )
+
+
+@router.callback_query(F.data.startswith("chk:"))
+async def cb_pack_check(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Отметка позиции в чек-листе сборки."""
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        _, raw_order, raw_index = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    checked = await _checked_items(db, order_id)
+    if raw_index != "refresh":
+        if raw_index in checked:
+            checked.discard(raw_index)
+        else:
+            checked.add(raw_index)
+        await db.set_setting(f"packed:{order_id}", ",".join(sorted(checked)))
+        await db.log_event(
+            order_id,
+            "packing",
+            {"item": raw_index, "done": raw_index in checked},
+            actor_id=callback.from_user.id,
+        )
+    items = order.get("items") or []
+    done = sum(1 for index, _ in enumerate(items) if str(index) in checked)
+    try:
+        await callback.message.edit_text(
+            f"🧺 <b>Сборка заказа №{order_id}</b> — {esc(order.get('chef_name') or '')}\n"
+            f"Слот: {esc(str(order.get('delivery_time') or '—'))} · "
+            f"собрано {done} из {len(items)}",
+            reply_markup=pack_checklist_keyboard(order_id, items, checked),
+        )
+    except Exception:
+        pass
+    await callback.answer("Готово" if done else "")
