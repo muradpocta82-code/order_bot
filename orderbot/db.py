@@ -1141,6 +1141,34 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def client_usage(self, chef_id: int, days: int = 30) -> dict[str, Any]:
+        """Что клиент покупал за период: суммы, позиции, деньги по дням."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=int(days))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT i.catalog_id, i.name, i.unit, SUM(i.qty) AS q, "
+            "SUM(i.total) AS s, COUNT(*) AS n FROM order_items i "
+            "JOIN orders o ON o.id = i.order_id "
+            "WHERE o.chef_id = %s AND o.status != 'cancelled' AND o.created_at >= %s "
+            "GROUP BY i.catalog_id, i.name, i.unit ORDER BY s DESC",
+            (int(chef_id), since),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        totals_cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS sum "
+            "FROM orders WHERE chef_id = %s AND status != 'cancelled' "
+            "AND created_at >= %s",
+            (int(chef_id), since),
+        )
+        totals = dict(await totals_cursor.fetchone() or {})
+        return {
+            "orders": int(totals.get("orders") or 0),
+            "sum": float(totals.get("sum") or 0),
+            "items": rows,
+        }
+
     async def analytics(self, days: int = 30) -> dict[str, Any]:
         """Сводка для владельца: выручка, чек, клиенты, топ позиций."""
         assert self.conn is not None

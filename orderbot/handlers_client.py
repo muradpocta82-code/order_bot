@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram import Bot, F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message, User
 
@@ -1156,3 +1157,31 @@ async def cb_price_off(callback: CallbackQuery, db: Database) -> None:
     except TelegramBadRequest:
         pass
     await callback.answer("Отключено")
+
+
+@router.message(Command("report"))
+async def cmd_client_report(message: Message, db: Database, settings: Settings) -> None:
+    """Кабинет клиента: сколько потратил и что чаще всего берёт."""
+    if _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Менеджеру — /analytics, /margin, /ops.")
+        return
+    data = await db.client_usage(message.from_user.id, 30)
+    if not data["orders"]:
+        await message.answer(
+            "За последние 30 дней заказов не было. Напишите, что нужно привезти."
+        )
+        return
+    lines = ["📊 <b>Ваши закупки за 30 дней</b>", ""]
+    lines.append(f"Заказов: <b>{data['orders']}</b> на <b>{money(data['sum'])}</b>")
+    if data["orders"]:
+        lines.append(f"Средний заказ: {money(data['sum'] / data['orders'])}")
+    lines.append("")
+    lines.append("<b>Что чаще всего брали</b>")
+    for row in data["items"][:8]:
+        lines.append(
+            f"• {esc(str(row.get('name')))} — {row['q']:g} {esc(str(row.get('unit') or ''))} "
+            f"на {money(row['s'])}"
+        )
+    lines.append("")
+    lines.append("Повторить прошлый заказ: кнопка «🔁 Как обычно» или /start.")
+    await message.answer("\n".join(lines))
