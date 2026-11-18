@@ -182,7 +182,11 @@ COURIER_HELP_TEXT = """🚚 <b>Доставщик</b>
 затем «Доставлено». Без отметки оплаты доставку закрыть нельзя.
 """
 
-START_TEXT = "Здравствуйте! Напишите заказ как удобно — сразу передам упаковщику. Можно текстом или голосом."
+START_TEXT = (
+    "Здравствуйте! Напишите заказ как удобно: текстом, голосом, фото списка.\n"
+    "Например: «2 кг филе, 5 упаковок моцареллы, завтра к 10:00».\n"
+    "В ответ пришлю состав, сумму и слот — останется подтвердить."
+)
 
 HELP_TEXT = """Напишите заказ одним сообщением — сразу передам упаковщику.
 
@@ -2020,12 +2024,16 @@ async def cb_access(
     except (ValueError, AttributeError):
         await callback.answer("Кнопка устарела", show_alert=True)
         return
-    access = "approved" if action == "ok" else "rejected"
+    access = "approved" if action in ("ok", "ok7") else "rejected"
     await db.set_user_access(user_id, access)
+    credit_note = ""
+    if action == "ok7":
+        await db.set_credit_days(user_id, 7)
+        credit_note = " Отсрочка платежа: 7 дней."
     try:
         await callback.bot.send_message(
             user_id,
-            "✅ Доступ подтверждён. Можете присылать заказы."
+            "✅ Доступ подтверждён." + credit_note + " Можете присылать заказы."
             if access == "approved"
             else "Доступ отклонён. Напишите менеджеру.",
         )

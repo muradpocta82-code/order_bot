@@ -1042,6 +1042,21 @@ async def cmd_ops(
         }
         for row in stats["claims"]:
             lines.append(f"• {titles.get(str(row['status']), row['status'])} — {row['n']}")
+    funnel = await db.client_funnel(days)
+    lines.append("")
+    lines.append("<b>Клиенты</b>")
+    lines.append(
+        f"Заявок: <b>{funnel['total']}</b> · допущено: <b>{funnel['approved']}</b>"
+        f" · ждут: <b>{funnel['pending']}</b>"
+    )
+    lines.append(
+        f"Сделали первый заказ: <b>{funnel['ordered']}</b>"
+        f" · активны за {days} дней: <b>{funnel['active']}</b>"
+    )
+    if funnel["approved"] and funnel["ordered"] < funnel["approved"]:
+        lines.append(
+            f"⚠️ Допущены, но ещё не заказывали: {funnel['approved'] - funnel['ordered']}"
+        )
     await message.answer("\n".join(lines))
 
 

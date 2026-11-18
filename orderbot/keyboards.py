@@ -456,6 +456,11 @@ def user_access_keyboard(user_id: int) -> InlineKeyboardMarkup:
                     text="✅ Допустить", callback_data=f"acc:ok:{user_id}"
                 ),
                 InlineKeyboardButton(
+                    text="✅ Отсрочка 7 дней", callback_data=f"acc:ok7:{user_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="❌ Отклонить", callback_data=f"acc:no:{user_id}"
                 ),
             ]

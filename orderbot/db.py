@@ -1077,6 +1077,47 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_credit_days(self, chef_id: int, days: int) -> None:
+        """Только срок отсрочки — лимит суммы не трогаем."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "UPDATE users SET credit_days = %s, updated_at = %s WHERE user_id = %s",
+            (int(days), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(chef_id)),
+        )
+        await self.conn.commit()
+
+    async def _count(self, query: str, params: tuple = ()) -> int:
+        assert self.conn is not None
+        cursor = await self.conn.execute(query, params)
+        row = await cursor.fetchone()
+        return int(list(dict(row).values())[0]) if row else 0
+
+    async def client_funnel(self, active_days: int = 30) -> dict[str, int]:
+        """Воронка клиентов: заявки → допущены → первый заказ → активные."""
+        cutoff = (datetime.now() - timedelta(days=active_days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        return {
+            "total": await self._count("SELECT COUNT(*) AS c FROM users"),
+            "approved": await self._count(
+                "SELECT COUNT(*) AS c FROM users WHERE access = %s", ("approved",)
+            ),
+            "pending": await self._count(
+                "SELECT COUNT(*) AS c FROM users WHERE access = %s", ("pending",)
+            ),
+            "rejected": await self._count(
+                "SELECT COUNT(*) AS c FROM users WHERE access = %s", ("rejected",)
+            ),
+            "ordered": await self._count(
+                "SELECT COUNT(DISTINCT chef_id) AS c FROM orders WHERE chef_id IS NOT NULL"
+            ),
+            "active": await self._count(
+                "SELECT COUNT(DISTINCT chef_id) AS c FROM orders "
+                "WHERE chef_id IS NOT NULL AND created_at >= %s",
+                (cutoff,),
+            ),
+        }
+
     async def credit_orders(self) -> list[dict[str, Any]]:
         """Заказы в долг — для отчёта по возрасту задолженности."""
         assert self.conn is not None
