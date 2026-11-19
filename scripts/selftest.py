@@ -242,6 +242,108 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_batch_questions() -> None:
+    print("\n[пакетные уточнения]")
+    from orderbot.batchq import (
+        MAX_BATCH,
+        batch_group,
+        batch_keyboard,
+        batch_text,
+    )
+
+    def item(idx: int, status: str, **extra) -> dict:
+        base = {"idx": idx, "status": status, "name": f"Позиция{idx}", "qty": 3, "unit": "шт"}
+        base.update(extra)
+        return base
+
+    one = [item(0, "needs_qty")]
+    check("одна позиция — обычный вопрос", batch_group(one) == [])
+    two = [item(0, "needs_qty"), item(1, "needs_qty")]
+    check("две одинаковые — пакет", len(batch_group(two)) == 2)
+    mixed = [item(0, "needs_qty"), item(1, "needs_unit"), item(2, "needs_unit")]
+    group = batch_group(mixed)
+    check("берём самый частый тип", all(i["status"] == "needs_unit" for i in group), str(group))
+    many = [item(i, "needs_qty") for i in range(6)]
+    check("не больше MAX_BATCH", len(batch_group(many)) == MAX_BATCH)
+    check("порядок по idx", [i["idx"] for i in batch_group(list(reversed(two)))] == [0, 1])
+
+    text = batch_text(two)
+    check("нумерованный список", "1)" in text and "2)" in text, text)
+    markup = batch_keyboard("draft-1", two)
+    first_row = markup.inline_keyboard[0]
+    check("строка на позицию", len(markup.inline_keyboard) == 3, str(len(markup.inline_keyboard)))
+    check(
+        "callback количества",
+        first_row[0].callback_data == "qty:draft-1:0:1",
+        first_row[0].callback_data,
+    )
+    check("подпись с номером", first_row[0].text.startswith("1)"), first_row[0].text)
+    unit_items = [item(0, "needs_unit", catalog_unit="кг", pack="pack1")]
+    unit_markup = batch_keyboard("draft-1", unit_items)
+    check(
+        "callback фасовки",
+        unit_markup.inline_keyboard[0][0].callback_data == "unit:draft-1:0:pack1",
+    )
+    check(
+        "есть отмена",
+        unit_markup.inline_keyboard[-1][0].callback_data == "dcancel:draft-1",
+    )
+
+
+def test_golden_live() -> None:
+    print("\n[золотой набор из боевых]")
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from orderbot.golden import clean_phrase, count, items_payload, remember_example
+
+    check(
+        "телефон вырезан",
+        "998" not in clean_phrase("филе 2 кг, звонить +998 90 123 45 67"),
+        clean_phrase("филе 2 кг, звонить +998 90 123 45 67"),
+    )
+    check(
+        "адрес вырезан",
+        "улица" not in clean_phrase("филе 2 кг, улица Навои 14, дом 3").lower(),
+        clean_phrase("филе 2 кг, улица Навои 14, дом 3"),
+    )
+    check("текст заказа остался", "филе" in clean_phrase("филе 2 кг").lower())
+    items = items_payload(
+        [
+            {"catalog_id": 4, "qty": 2, "unit": "кг"},
+            {"catalog_id": None, "qty": 1, "unit": "шт"},
+            {"catalog_id": 5, "qty": 0, "unit": "кг"},
+        ]
+    )
+    check("только распознанные позиции", len(items) == 1 and items[0]["catalog_id"] == 4, str(items))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "live.jsonl"
+        order = {
+            "id": 77,
+            "raw_text": "филе 2 кг, тел +998 90 111 22 33",
+            "delivery_date": "2026-11-20",
+            "items": [{"catalog_id": 4, "qty": 2, "unit": "кг"}],
+        }
+        case = remember_example(order, path=path)
+        check("пример сохранён", case is not None and case["id"] == 1000)
+        check("файл на месте", count(path) == 1)
+        check(
+            "телефон не попал в файл",
+            "998" not in path.read_text(encoding="utf-8"),
+        )
+        second = remember_example(order, path=path)
+        check("второй пример с новым id", second is not None and second["id"] == 1001)
+        check("в файле два примера", count(path) == 2)
+        check(
+            "заказ без текста не сохраняется",
+            remember_example({"id": 78, "raw_text": "", "items": order["items"]}, path=path)
+            is None,
+        )
+        saved = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        check("структура как в золотом наборе", {"id", "phrase", "items"} <= set(saved))
+
+
 def test_local_money() -> None:
     print("\n[суммы в сумах по курсу заказа]")
     from orderbot.formatting import (
@@ -1003,6 +1105,8 @@ async def main() -> int:
     test_quiet_hours()
     test_sanity_checks()
     test_local_money()
+    test_batch_questions()
+    test_golden_live()
     test_module_names()
     await test_db()
     await test_start_and_greeting()

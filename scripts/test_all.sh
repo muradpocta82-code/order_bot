@@ -21,6 +21,12 @@ if [ -x ./venv/bin/ruff ]; then
 fi
 
 status=0
+
+# E2: точность разбора не должна падать больше чем на 2 пункта от базовой.
+echo "=== scripts/eval_parse.py --check ==="
+./venv/bin/python scripts/eval_parse.py --local-only --check --show-errors 3 \
+  || { echo "ТОЧНОСТЬ РАЗБОРА УПАЛА — деплой запрещён" >&2; status=1; }
+
 for script in scripts/selftest.py scripts/integration_test.py scripts/delivery_flow_check.py; do
   echo "=== $script ==="
   ./venv/bin/python "$script" || status=1

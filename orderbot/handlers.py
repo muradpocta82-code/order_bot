@@ -108,6 +108,7 @@ from .nlu import ParsedOrder, detect_intent, parse_local, parse_number
 from .slots import default_time as slot_default_time
 from .slots import parse_slots, slot_labels
 from .stt import Transcriber
+from .batchq import batch_group, batch_keyboard, batch_text
 from .sanity import DUP_WINDOW_MIN, is_duplicate, suspicious_items
 from .units import canon_unit, format_qty, pack_size, plural, price_per_unit
 
@@ -434,6 +435,21 @@ async def _advance_draft(
         fresh = await db.get_draft(draft["id"])
         if fresh is None or fresh.get("status") != "draft":
             return False
+
+        # E5: несколько однотипных уточнений — одним сообщением
+        pending = batch_group(fresh.get("items") or [])
+        if pending:
+            fresh["questions"] = int(fresh.get("questions") or 0) + 1
+            await db.save_draft(fresh)
+            await db.log_question("пакет", "batch")
+            await _edit_panel(
+                bot,
+                chat_id,
+                message_id,
+                batch_text(pending),
+                batch_keyboard(fresh["id"], pending),
+            )
+            return True
 
         for item in fresh.get("items", []):
             if item.get("status") == "unavailable":

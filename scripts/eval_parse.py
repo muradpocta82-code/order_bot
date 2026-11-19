@@ -30,6 +30,8 @@ from orderbot.nlu import parse_local  # noqa: E402
 TZ = ZoneInfo("Asia/Tashkent")
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=TZ)
 GOLDEN_PATH = BASE_DIR / "tests" / "orders_golden.jsonl"
+LIVE_PATH = BASE_DIR / "tests" / "orders_golden_live.jsonl"
+BASELINE_PATH = BASE_DIR / "tests" / ".eval_baseline.json"
 
 
 @dataclass
@@ -233,6 +235,48 @@ async def evaluate_deepseek(
     return metrics
 
 
+def accuracy(metrics: Metrics) -> float:
+    """Точность по целым заказам, проценты."""
+    return metrics.order_ok / metrics.cases * 100 if metrics.cases else 0.0
+
+
+def check_accuracy(name: str, metrics: Metrics, tolerance: float) -> bool:
+    """Сверяет точность с базовой. Падение больше tolerance пунктов — провал."""
+    data: dict = {}
+    if BASELINE_PATH.exists():
+        try:
+            data = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    current = accuracy(metrics)
+    stored = data.get(name, {}).get("accuracy")
+    ok = True
+    if isinstance(stored, (int, float)):
+        if current < float(stored) - tolerance:
+            print(
+                f"  ❌ точность «{name}» упала: {current:.1f}% против {float(stored):.1f}%"
+                f" (допуск {tolerance:g} п.)"
+            )
+            ok = False
+        else:
+            print(f"  ✅ точность «{name}»: {current:.1f}% (было {float(stored):.1f}%)")
+    else:
+        print(f"  • базовая точность «{name}» записана: {current:.1f}%")
+    if ok and (not isinstance(stored, (int, float)) or current > float(stored)):
+        data[name] = {
+            "accuracy": round(current, 2),
+            "cases": metrics.cases,
+            "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        try:
+            BASELINE_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            print("  (не удалось сохранить базовую точность)")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Точность разбора заказов")
     parser.add_argument("--golden", type=Path, default=GOLDEN_PATH)
@@ -240,6 +284,15 @@ def main() -> int:
     parser.add_argument("--local-only", action="store_true")
     parser.add_argument("--deepseek-only", action="store_true")
     parser.add_argument("--show-errors", type=int, default=8)
+    parser.add_argument(
+        "--golden-live", type=Path, default=LIVE_PATH,
+        help="набор из боевых заказов (наполняется командой /golden)",
+    )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="сверить точность с базовой и упасть при падении",
+    )
+    parser.add_argument("--tolerance", type=float, default=2.0)
     args = parser.parse_args()
     if args.local_only and args.deepseek_only:
         parser.error("--local-only и --deepseek-only несовместимы")
@@ -257,9 +310,20 @@ def main() -> int:
     print(f"Каталог:       {settings.catalog_path} ({len(catalog.items)} позиций)")
     print(f"Дата отчёта:   {NOW.isoformat()}")
 
+    failed = False
     if not args.deepseek_only:
         local = evaluate_local(cases, catalog, settings)
         local.report(args.show_errors)
+        if args.check:
+            failed = not check_accuracy("main", local, args.tolerance)
+        live_path = Path(args.golden_live)
+        if live_path.exists() and live_path.read_text(encoding="utf-8").strip():
+            live_cases = load_cases(live_path)
+            if live_cases:
+                live_local = evaluate_local(live_cases, catalog, settings)
+                live_local.report(args.show_errors)
+                if args.check:
+                    failed = not check_accuracy("live", live_local, args.tolerance) or failed
 
     if not args.local_only:
         if settings.deepseek_api_key:
@@ -270,6 +334,9 @@ def main() -> int:
             print("\nDeepSeek")
             print("-" * 70)
             print("  ключ не задан — оценка DeepSeek пропущена")
+    if failed:
+        print("\n❌ ТОЧНОСТЬ УПАЛА — правку разбора деплоить нельзя.")
+        return 1
     return 0
 
 

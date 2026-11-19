@@ -29,6 +29,7 @@ from .keyboards import (
     price_undo_keyboard,
     price_update_keyboard,
 )
+from . import golden as golden_mod
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
@@ -733,6 +734,43 @@ async def cmd_quiet(
     await message.answer(
         f"Тихие часы: {state}.{pending}\n"
         "Поставить: /quiet 23-7 · выключить: /quiet off"
+    )
+
+
+@router.message(Command("golden"))
+async def cmd_golden(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """«Запомнить как пример»: заказ → tests/orders_golden_live.jsonl (E2)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw.isdigit():
+        await message.answer(
+            "Формат: <code>/golden НОМЕР</code> — сохраняю текст заказа и его позиции "
+            "в золотой набор для проверки разбора.\n"
+            f"Сейчас в наборе из боевых: {golden_mod.count()} шт."
+        )
+        return
+    order = await db.get_order(int(raw))
+    if order is None:
+        await message.answer(f"Заказ №{raw} не найден.")
+        return
+    case = golden_mod.remember_example(order)
+    if case is None:
+        await message.answer(
+            "Из этого заказа нечего взять: нет исходного текста или распознанных позиций."
+        )
+        return
+    specs = ", ".join(
+        f"{item['catalog_id']}×{item['qty']:g}" for item in case["items"][:6]
+    )
+    await message.answer(
+        f"📚 Заказ №{raw} сохранён как пример №{case['id']}.\n"
+        f"Текст: <i>{esc(case['phrase'][:200])}</i>\n"
+        f"Позиции: {esc(specs)}\n"
+        f"Всего примеров из боевых: {golden_mod.count()}.\n"
+        "Проверка разбора: <code>venv/bin/python scripts/eval_parse.py --local-only</code>"
     )
 
 
