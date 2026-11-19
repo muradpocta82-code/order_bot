@@ -1560,6 +1560,51 @@ class Database:
             "advance": advance,
         }
 
+    async def add_writeoff(
+        self,
+        catalog_id: int | None,
+        name: str,
+        qty: float,
+        unit: str,
+        reason: str,
+        cost: float | None,
+        actor_id: int = 0,
+    ) -> int:
+        """Записывает списание/усушку (B9)."""
+        assert self.conn is not None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self.conn.execute(
+            "INSERT INTO writeoffs(catalog_id, name, qty, unit, reason, cost, actor_id, ts) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                int(catalog_id) if catalog_id else None,
+                name[:200],
+                round(float(qty), 3),
+                unit[:20],
+                reason[:100],
+                round(float(cost), 4) if cost is not None else None,
+                int(actor_id or 0),
+                now,
+            ),
+        )
+        writeoff_id = int((await cursor.fetchone())["id"])
+        await self.conn.commit()
+        return writeoff_id
+
+    async def writeoff_rows(self, days: int = 30) -> list[dict[str, Any]]:
+        """Списания за период (B9) — для отчёта по потерям."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, days))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT catalog_id, name, qty, unit, reason, cost, "
+            "COALESCE(cost, 0) * qty AS cost_value FROM writeoffs WHERE ts >= %s "
+            "ORDER BY ts DESC",
+            (since,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def ledger_client_debts(self) -> list[dict[str, Any]]:
         """Долги по книге: доставлено, но не оплачено (B3, шаг 2)."""
         assert self.conn is not None

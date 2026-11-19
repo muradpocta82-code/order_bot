@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
@@ -100,3 +101,82 @@ async def cmd_start_item(
     )
 
 
+
+
+@router.message(Command("writeoff"))
+async def cmd_writeoff(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Списание/усушка: /writeoff помидоры 3 кг усушка (B9)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from .writeoff import parse_command
+
+    raw = (command.args or "").strip()
+    request = parse_command(raw)
+    if request is None:
+        await message.answer(
+            "Формат: <code>/writeoff позиция количество причина</code>\n"
+            "Пример: <code>/writeoff помидоры 3 кг усушка</code>\n"
+            "Причины: усушка, порча, просрочка, брак, бой, подарок."
+        )
+        return
+    matches = catalog.match(request.phrase, limit=1, min_score=55)
+    if not matches:
+        await message.answer(
+            f"Не нашёл «{esc(request.phrase)}» в прайсе. "
+            "Проверьте название или используйте /price."
+        )
+        return
+    item = matches[0].item
+    unit = request.unit or item.unit
+    day = datetime.now(settings.timezone).date().isoformat()
+    cost = await db.cost_on(item.id, day)
+    if cost is None:
+        costs = await db.costs_map()
+        cost = costs.get(item.id)
+    if cost is None and item.purchase:
+        cost = float(item.purchase)
+    await db.add_writeoff(
+        item.id,
+        item.name,
+        request.qty,
+        unit,
+        request.reason or "без причины",
+        cost,
+        message.from_user.id,
+    )
+    value = (float(cost) * request.qty) if cost is not None else None
+    lines = [
+        f"🗑 Списано: <b>{esc(item.name)} {request.qty:g} {esc(unit)}</b>"
+        + (f" — {esc(request.reason)}" if request.reason else "")
+    ]
+    if value is not None:
+        lines.append(f"По закупке: {money(value)}")
+    else:
+        lines.append("⚠️ Закупочная цена неизвестна — задайте её /cost, чтобы видеть потери.")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("losses"))
+async def cmd_losses(
+    message: Message, command: CommandObject, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    """Отчёт по потерям: категории и позиции за период (B9)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from .writeoff import report_lines
+
+    days = 30
+    raw = (command.args or "").strip()
+    if raw.isdigit():
+        days = max(1, min(365, int(raw)))
+    rows = await db.writeoff_rows(days)
+    for row in rows:
+        item = catalog.get(int(row["catalog_id"])) if row.get("catalog_id") else None
+        row["category"] = getattr(item, "category", "") if item is not None else ""
+    await message.answer("\n".join(report_lines(rows, days)))

@@ -251,6 +251,41 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_writeoff() -> None:
+    print("\n[списания и усушка]")
+    from orderbot.writeoff import parse_command, report_lines
+
+    request = parse_command("помидоры 3 кг усушка")
+    check("позиция разобрана", request is not None and "помидор" in request.phrase.lower(), str(request))
+    check("количество", request is not None and request.qty == 3.0)
+    check("единица", request is not None and request.unit == "кг")
+    check("причина", request is not None and request.reason == "усушка")
+    check(
+        "порча распознана",
+        parse_command("огурцы 2 порча").reason == "порча",
+        str(parse_command("огурцы 2 порча")),
+    )
+    check("без количества — None", parse_command("помидоры усушка") is None)
+    check("пустая строка — None", parse_command("") is None)
+    check("ноль не принимаем", parse_command("помидоры 0") is None)
+    decimal = parse_command("филе 1,5 кг бой")
+    check("дробное количество", decimal is not None and decimal.qty == 1.5, str(decimal))
+    check("причина убрана из названия", "бой" not in (decimal.phrase if decimal else ""), str(decimal))
+
+    rows = [
+        {"category": "овощи", "name": "Помидоры", "qty": 3, "unit": "кг", "cost_value": 10.0},
+        {"category": "овощи", "name": "Огурцы", "qty": 1, "unit": "кг", "cost_value": 4.0},
+        {"category": "мясо", "name": "Филе", "qty": 2, "unit": "кг", "cost_value": 6.0},
+    ]
+    lines = report_lines(rows, 30)
+    text = "\n".join(lines)
+    check("итог потерь", "20.00" in text, text)
+    check("категории в отчёте", "овощи" in text and "мясо" in text, text)
+    check("доля потерь", "% потерь" in text, text)
+    check("топ позиций", "Помидоры" in text, text)
+    check("пустой отчёт", "списаний нет" in "\n".join(report_lines([], 30)))
+
+
 def test_ledger_math() -> None:
     print("\n[книга расчётов: зачёт FIFO]")
     from orderbot.ledger import balances, differences, fifo_allocate, open_amount
@@ -1782,6 +1817,7 @@ async def main() -> int:
     test_settings_router()
     test_route_plan()
     test_ledger_math()
+    test_writeoff()
     test_golden_live()
     test_module_names()
     await test_db()
