@@ -242,6 +242,75 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_margin_slices() -> None:
+    print("\n[маржа по срезам]")
+    from orderbot.margins import collect, report_lines
+
+    class FakeItem:
+        def __init__(self, name, category, purchase=None):
+            self.name = name
+            self.category = category
+            self.purchase = purchase
+
+    class FakeCatalog:
+        def __init__(self, items):
+            self._items = items
+
+        def get(self, item_id):
+            return self._items.get(int(item_id))
+
+    catalog = FakeCatalog(
+        {
+            4: FakeItem("Куриное филе", "мясо"),
+            5: FakeItem("Помидоры", "овощи"),
+            6: FakeItem("Моцарелла", "сыр", purchase=4.0),
+        }
+    )
+    rows = [
+        {"catalog_id": 4, "name": "Куриное филе", "qty": 2, "price": 5.25, "chef_id": 1, "chef_name": "Кафе Ромашка"},
+        {"catalog_id": 5, "name": "Помидоры", "qty": 10, "price": 1.0, "chef_id": 2, "chef_name": "Плов-хаус"},
+        {"catalog_id": 6, "name": "Моцарелла", "qty": 1, "price": 5.0, "chef_id": 1, "chef_name": "Кафе Ромашка"},
+    ]
+    costs = {4: 3.5, 5: 1.4}  # по помидорам закупка выше продажи — убыток
+    data = collect(rows, catalog, costs)
+    check("выручка посчитана", round(data["totals"]["revenue"], 2) == 25.5, str(data["totals"]))
+    check("закупка посчитана", round(data["totals"]["cost"], 2) == 25.0, str(data["totals"]))
+    check("маржа", round(data["margin"], 2) == 0.5, str(data["margin"]))
+    check("три категории", len(data["categories"]) == 3, str([c[0] for c in data["categories"]]))
+    check("два клиента", len(data["clients"]) == 2, str(data["clients"]))
+    check("убыточная позиция найдена", [e["name"] for e in data["lossy"]] == ["Помидоры"], str(data["lossy"]))
+    check(
+        "запасная закупка из прайса работает",
+        any(e["name"] == "Моцарелла" and e["known"] for e in data["positions"]),
+        str(data["positions"]),
+    )
+    unknown_data = collect(
+        [{"catalog_id": 99, "name": "Трюфель", "qty": 1, "price": 50.0, "chef_id": 3}],
+        catalog,
+        {},
+    )
+    check(
+        "неизвестная закупка помечена",
+        unknown_data["totals"]["unknown"] == 1
+        and all(not e["known"] for e in unknown_data["positions"]),
+        str(unknown_data["totals"]),
+    )
+    check(
+        "без закупки позиция не считается убыточной",
+        unknown_data["lossy"] == [],
+        str(unknown_data["lossy"]),
+    )
+    lines = report_lines(data)
+    text = "\n".join(lines)
+    check("категории в отчёте", "Категории" in text, text)
+    check("клиенты в отчёте", "Клиенты" in text, text)
+    check("убыточные в отчёте", "Убыточные позиции" in text, text)
+    check("помидоры в убытке", "Помидоры" in text, text)
+
+    empty = collect([], catalog, {})
+    check("пустые данные не падают", empty["margin"] == 0.0 and report_lines(empty) == [])
+
+
 def test_week_report() -> None:
     print("\n[недельный отчёт: сравнение и выводы]")
     from orderbot.extras import week_advice, week_comparison, week_metrics
@@ -1360,6 +1429,7 @@ async def main() -> int:
     test_batch_questions()
     test_webapp_light()
     test_week_report()
+    test_margin_slices()
     test_golden_live()
     test_module_names()
     await test_db()

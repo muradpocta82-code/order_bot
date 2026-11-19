@@ -30,6 +30,7 @@ from .keyboards import (
     price_update_keyboard,
 )
 from . import golden as golden_mod
+from . import margins as margins_mod
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
@@ -426,6 +427,8 @@ async def cmd_margin(
             f"⚠️ По {unknown} позициям нет закупочной цены — "
             "задайте её командой /cost позиция цена или колонкой «Закупка» в прайсе."
         )
+    data = margins_mod.collect(rows, catalog, costs)
+    lines.extend(margins_mod.report_lines(data))
     await message.answer("\n".join(lines))
 
 
