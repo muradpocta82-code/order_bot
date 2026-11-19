@@ -1109,6 +1109,142 @@ async def test_lock_cleanup() -> None:
     )
 
 
+async def test_pending_price() -> None:
+    print("\n[подтверждение прайса переживает перезапуск]")
+    from orderbot.pending import (
+        KEY_PREFIX,
+        purge_pending_prices,
+        put_pending_price,
+        take_pending_price,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = (
+            Database(Path(tmp) / "unused.db", TEST_URL)
+            if TEST_URL
+            else Database(Path(tmp) / "pending.db")
+        )
+        await db.connect()
+        try:
+            if not TEST_URL:
+                await db.init()
+            price_file = Path(tmp) / "new-price.xlsx"
+            price_file.write_bytes(b"xlsx")
+            await put_pending_price(db, "token1", price_file, 12)
+            check(
+                "токен записан в базу",
+                bool(await db.get_setting(KEY_PREFIX + "token1", "")),
+            )
+            taken = await take_pending_price(db, "token1")
+            check("токен достаётся", taken is not None and taken["items"] == 12, str(taken))
+            check("файл прайса на месте", price_file.exists())
+            check("повторно тот же токен не работает", await take_pending_price(db, "token1") is None)
+            check("чужой токен — None", await take_pending_price(db, "нет-такого") is None)
+
+            old_file = Path(tmp) / "old-price.xlsx"
+            old_file.write_bytes(b"xlsx")
+            await put_pending_price(db, "old", old_file, 1)
+            import json as _json
+            raw = await db.get_setting(KEY_PREFIX + "old", "")
+            data = _json.loads(raw)
+            data["created"] = 1.0  # час назад и больше
+            await db.set_setting(KEY_PREFIX + "old", _json.dumps(data))
+            check("просроченный токен не берётся", await take_pending_price(db, "old") is None)
+            check("файл просроченного удалён", not old_file.exists())
+
+            gone_file = Path(tmp) / "gone.xlsx"
+            await put_pending_price(db, "gone", gone_file, 3)
+            check("нет файла — нет токена", await take_pending_price(db, "gone") is None)
+
+            stale = Path(tmp) / "stale.xlsx"
+            stale.write_bytes(b"xlsx")
+            await put_pending_price(db, "stale", stale, 5)
+            raw = await db.get_setting(KEY_PREFIX + "stale", "")
+            data = _json.loads(raw)
+            data["created"] = 1.0
+            await db.set_setting(KEY_PREFIX + "stale", _json.dumps(data))
+            removed = await purge_pending_prices(db)
+            check("уборка нашла просроченное", removed >= 1, str(removed))
+            check("уборка удалила файл", not stale.exists())
+        finally:
+            await db.close()
+
+
+async def test_races() -> None:
+    print("\n[гонки: двойные нажатия]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            user_id = 7001
+            await db.ensure_user(user_id, "Гонки Тест")
+            draft = {
+                "id": "race-1",
+                "chat_id": user_id,
+                "user_id": user_id,
+                "user_name": "Гонки Тест",
+                "delivery_date": "2026-11-21",
+                "delivery_time": "09:00–12:00",
+                "source": "test",
+            }
+            items = [
+                {
+                    "catalog_id": 4,
+                    "name": "Куриное филе",
+                    "qty": 2,
+                    "unit": "кг",
+                    "price": 5.25,
+                    "total": 10.5,
+                }
+            ]
+            order_id = await db.create_order(draft, items, None)
+
+            # 1. Два упаковщика одновременно жмут «Принят»
+            results = await asyncio.gather(
+                db.transition_order(order_id, ("new",), "accepted"),
+                db.transition_order(order_id, ("new",), "accepted"),
+            )
+            check("принял только один", sorted(results) == [False, True], str(results))
+            order = await db.get_order(order_id)
+            check("статус accepted", order["status"] == "accepted", str(order["status"]))
+
+            # 2. Курьер жмёт «Собран» дважды
+            await db.transition_order(order_id, ("accepted",), "ready")
+            twice = await asyncio.gather(
+                db.transition_order(order_id, ("ready",), "delivering"),
+                db.transition_order(order_id, ("ready",), "delivering"),
+            )
+            check("в доставку ушёл один раз", sorted(twice) == [False, True], str(twice))
+
+            # 3. Оплата наличными приходит дважды (курьер и менеджер)
+            paid = await asyncio.gather(
+                db.mark_order_paid(order_id, "cash", 10.5),
+                db.mark_order_paid(order_id, "cash", 10.5),
+            )
+            check("оплата засчитана один раз", sorted(paid) == [False, True], str(paid))
+            fresh = await db.get_order(order_id)
+            check("статус оплаты paid", fresh["payment_status"] == "paid")
+            check(
+                "сумма не удвоилась",
+                float(fresh.get("paid_amount") or 0) == 10.5,
+                str(fresh.get("paid_amount")),
+            )
+
+            # 4. Отмена уже доставленного заказа не проходит
+            check(
+                "done нельзя отменить переходом",
+                not await db.transition_order(order_id, ("new", "accepted"), "cancelled"),
+            )
+        finally:
+            await db.close()
+
+
 async def test_allowed_middleware() -> None:
     print("\n[10] ALLOWED_CHAT_IDS")
     from types import SimpleNamespace
@@ -1160,6 +1296,8 @@ async def main() -> int:
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()
+    await test_pending_price()
+    await test_races()
     await test_allowed_middleware()
     print("\n" + "=" * 70)
     print(f"Пройдено: {passed}   Провалено: {len(failed)}")

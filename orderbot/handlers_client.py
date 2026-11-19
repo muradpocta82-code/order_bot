@@ -124,7 +124,7 @@ async def _handle_claim(*args, **kwargs):
 def _format_price_diff(*args, **kwargs):
     return _from_handlers()._format_price_diff(*args, **kwargs)
 from .slots import parse_slots, slot_labels
-from .state import pending_prices as _pending_prices
+from .pending import put_pending_price
 from .texts import MANAGER_ONLY_TEXT, RATE_LIMIT_TEXT
 from .stt import Transcriber
 
@@ -134,7 +134,7 @@ router = Router(name="orderbot_client")
 
 @router.message(F.document)
 async def on_document(
-    message: Message, bot: Bot, settings: Settings, catalog: Catalog
+    message: Message, bot: Bot, db: Database, settings: Settings, catalog: Catalog
 ) -> None:
     if not _is_manager(settings, message.from_user.id, message.chat.id):
         await message.answer("Файл со списком может присылать только менеджер.")
@@ -164,11 +164,7 @@ async def on_document(
         return
 
     diff = diff_catalogs(catalog, new_catalog)
-    _pending_prices[token] = {
-        "catalog": new_catalog,
-        "path": str(path),
-        "created": time.time(),
-    }
+    await put_pending_price(db, token, path, len(new_catalog.items))
     await message.answer(
         _format_price_diff(diff), reply_markup=price_update_keyboard(token)
     )

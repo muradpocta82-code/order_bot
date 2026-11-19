@@ -38,6 +38,7 @@ from orderbot.keyboards import (
     reminder_keyboard,
 )
 from orderbot.pricecast import send_morning_prices
+from orderbot.pending import purge_pending_prices
 from orderbot.quiet import bind as bind_quiet, flush_queue
 from orderbot.stt import Transcriber
 from orderbot.summary import today_summary
@@ -386,6 +387,10 @@ async def _maintenance_loop(
             await _run_maintenance(db)
         except Exception as exc:
             log.warning("Ошибка обслуживания БД: %s", exc)
+        try:
+            await purge_pending_prices(db)
+        except Exception as exc:
+            log.warning("Ошибка уборки подтверждений прайса: %s", exc)
         if catalog is not None and _catalog_json_stale(catalog, settings):
             _dump_catalog_json(catalog, settings)
 

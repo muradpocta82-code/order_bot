@@ -117,7 +117,7 @@ router = Router(name="orderbot")
 
 BOT_STARTED_AT = time.time()
 _last_error: dict[str, Any] = {"at": 0.0, "text": ""}
-from .state import pending_prices as _pending_prices  # noqa: E402
+from .pending import purge_pending_prices, take_pending_price  # noqa: E402
 
 
 def record_error(exc: BaseException) -> None:
@@ -1391,14 +1391,18 @@ async def cb_price_apply(
     if not await _manager_ok(callback, settings):
         return
     token = callback.data.split(":", 2)[2]
-    pending = _pending_prices.pop(token, None)
-    if pending is None or time.time() - pending["created"] > 3600:
-        if pending is not None:
-            Path(pending["path"]).unlink(missing_ok=True)
+    pending = await take_pending_price(db, token)
+    if pending is None:
         await callback.answer("Обновление устарело", show_alert=True)
         return
-    new_catalog: Catalog = pending["catalog"]
-    path = Path(pending["path"])
+    path = Path(str(pending["path"]))
+    try:
+        new_catalog = Catalog.load(path)
+    except Exception:
+        log.warning("Не удалось прочитать подтверждённый прайс %s", path)
+        path.unlink(missing_ok=True)
+        await callback.answer("Файл прайса не читается", show_alert=True)
+        return
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     versions_dir = settings.data_dir / "price_versions"
     versions_dir.mkdir(parents=True, exist_ok=True)
@@ -1438,14 +1442,14 @@ async def cb_price_apply(
 
 @router.callback_query(F.data.startswith("price:cancel:"))
 async def cb_price_cancel(
-    callback: CallbackQuery, settings: Settings
+    callback: CallbackQuery, db: Database, settings: Settings
 ) -> None:
     if not await _manager_ok(callback, settings):
         return
     token = callback.data.split(":", 2)[2]
-    pending = _pending_prices.pop(token, None)
+    pending = await take_pending_price(db, token)
     if pending is not None:
-        Path(pending["path"]).unlink(missing_ok=True)
+        Path(str(pending["path"])).unlink(missing_ok=True)
     try:
         await callback.message.edit_text(
             "Оставил прежний список.", reply_markup=manager_back_keyboard()

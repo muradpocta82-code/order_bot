@@ -15,7 +15,6 @@ from urllib.parse import urlparse
 import aiosqlite
 
 from .migrations import apply_migrations
-from .pg import PgConnection
 
 log = logging.getLogger("orderbot.db")
 
@@ -105,13 +104,9 @@ class Database:
 
     async def connect(self) -> None:
         if self.url:
-            driver = os.getenv("DB_DRIVER", "psycopg").strip().lower()
-            if driver == "psycopg":
-                from .pg_psycopg import PsycopgConnection
+            from .pg_psycopg import PsycopgConnection
 
-                self.conn = PsycopgConnection(self.url)
-            else:
-                self.conn = PgConnection(self.url)
+            self.conn = PsycopgConnection(self.url)
             await self.conn.connect()
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
