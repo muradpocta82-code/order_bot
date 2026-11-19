@@ -242,6 +242,31 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_settings_router() -> None:
+    print("\n[команды расписания вынесены и подключены]")
+    from orderbot.handlers import router as main_router
+    from orderbot.handlers_settings import router as settings_router
+
+    check("свой роутер расписания", settings_router.name == "orderbot_settings", settings_router.name)
+    commands = [
+        handler.callback.__name__
+        for handler in settings_router.message.handlers
+        if hasattr(handler, "callback")
+    ]
+    check(
+        "три команды в роутере",
+        {"cmd_slots", "cmd_cutoff", "cmd_weekend"} <= set(commands),
+        str(commands),
+    )
+    names = [getattr(r, "name", "") for r in main_router.sub_routers]
+    check("роутер подключён к основному", "orderbot_settings" in names, str(names))
+    check(
+        "подключён раньше хвоста",
+        names.index("orderbot_settings") < names.index("orderbot_tail"),
+        str(names),
+    )
+
+
 def test_costvoice() -> None:
     print("\n[закупки голосом: разбор цен]")
     from orderbot.costvoice import as_payload, describe, match_lines, parse_pairs
@@ -1555,6 +1580,7 @@ async def main() -> int:
     test_client_card()
     test_statement()
     test_costvoice()
+    test_settings_router()
     test_golden_live()
     test_module_names()
     await test_db()
