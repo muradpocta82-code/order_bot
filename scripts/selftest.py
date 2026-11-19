@@ -307,6 +307,26 @@ def test_settings_router() -> None:
         str(names),
     )
 
+    from orderbot.handlers_stock import router as stock_router
+
+    stock_commands = [
+        handler.callback.__name__
+        for handler in stock_router.message.handlers
+        if hasattr(handler, "callback")
+    ]
+    check(
+        "складские команды в своём роутере",
+        {"cmd_missing", "cmd_quality", "cmd_stop_item", "cmd_start_item"}
+        <= set(stock_commands),
+        str(stock_commands),
+    )
+    check("роутер склада подключён", "orderbot_stock" in names, str(names))
+    check(
+        "склад раньше хвоста",
+        names.index("orderbot_stock") < names.index("orderbot_tail"),
+        str(names),
+    )
+
 
 def test_costvoice() -> None:
     print("\n[закупки голосом: разбор цен]")
