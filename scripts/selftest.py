@@ -242,6 +242,45 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_sanity_checks() -> None:
+    print("\n[проверки опечаток]")
+    from orderbot.sanity import is_duplicate, suspicious_items
+
+    fillet = {"catalog_id": 4, "name": "Куриное филе", "qty": 2, "unit": "кг"}
+    fillet5 = {"catalog_id": 4, "name": "Куриное филе", "qty": 5, "unit": "кг"}
+    pieces = {"catalog_id": 4, "name": "Куриное филе", "qty": 5, "unit": "шт"}
+    check("одинаковые позиции — дубль", is_duplicate([fillet], [dict(fillet)]))
+    check(
+        "5 кг и 5 штук — не дубль",
+        not is_duplicate([pieces], [fillet5]),
+        "единица измерения должна различать заказы",
+    )
+    check("другое количество — не дубль", not is_duplicate([fillet5], [fillet]))
+    check("пустой заказ не дубль", not is_duplicate([], [fillet]))
+    check(
+        "строка без catalog_id не считается",
+        not is_duplicate([{"qty": 2}], [{"qty": 2}]),
+    )
+    usual = {4: 2.0}
+    check("2 кг при обычных 2 кг — норма", suspicious_items([fillet], usual) == [])
+    check(
+        "8 кг при обычных 2 кг — подозрительно",
+        len(suspicious_items([{**fillet, "qty": 8}], usual)) == 1,
+    )
+    check(
+        "5 кг при обычных 2 кг — ещё норма",
+        suspicious_items([fillet5], usual) == [],
+    )
+    check(
+        "500 кг — подозрительно даже без истории",
+        len(suspicious_items([{**fillet, "qty": 500}], {})) == 1,
+    )
+    check(
+        "новая позиция без истории не тревожит",
+        suspicious_items([fillet5], {}) == [],
+    )
+
+
 def test_quiet_hours() -> None:
     print("\n[тихие часы]")
     from datetime import datetime as _dt
@@ -928,6 +967,7 @@ async def main() -> int:
     test_core()
     test_slots()
     test_quiet_hours()
+    test_sanity_checks()
     test_module_names()
     await test_db()
     await test_start_and_greeting()

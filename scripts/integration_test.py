@@ -620,6 +620,24 @@ async def main() -> int:
             str(harness.texts(CHAT_ID))[-200:],
         )
 
+        print("\n[15] Дубль заказа в течение 10 минут не создаётся")
+        session.sent.clear()
+        await harness.text("куриное филе 3 кг", user=USER, chat_id=CHAT_ID)
+        after_first = await db.count_orders()
+        session.sent.clear()
+        await harness.text("куриное филе 3 кг", user=USER, chat_id=CHAT_ID)
+        dup_text = "\n".join(harness.texts(CHAT_ID))
+        check(
+            "второй такой же заказ не создан",
+            await db.count_orders() == after_first,
+            dup_text[:200],
+        )
+        check(
+            "клиенту сказали, что заказ уже отправлен",
+            "уже отправили" in dup_text,
+            dup_text[:300],
+        )
+
         await db.close()
         await bot.session.close()
         await ai.close()

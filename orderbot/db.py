@@ -406,6 +406,40 @@ class Database:
             )
         return result
 
+    async def max_qty_per_item(self, chef_id: int) -> dict[int, float]:
+        """Сколько максимум клиент когда-либо брал по каждой позиции."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT oi.catalog_id, MAX(oi.qty) AS m "
+            "FROM order_items oi JOIN orders o ON o.id = oi.order_id "
+            "WHERE o.chef_id = %s AND oi.catalog_id IS NOT NULL "
+            "AND o.status != 'cancelled' GROUP BY oi.catalog_id",
+            (int(chef_id),),
+        )
+        result: dict[int, float] = {}
+        for row in await cursor.fetchall():
+            try:
+                result[int(row["catalog_id"])] = float(row["m"] or 0)
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    async def recent_order(self, chef_id: int, minutes: int = 10) -> dict[str, Any] | None:
+        """Последний неотменённый заказ клиента за последние N минут (с позициями)."""
+        assert self.conn is not None
+        cutoff = (datetime.now() - timedelta(minutes=max(1, minutes))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT id FROM orders WHERE chef_id = %s AND status != 'cancelled' "
+            "AND created_at >= %s ORDER BY created_at DESC, id DESC LIMIT 1",
+            (int(chef_id), cutoff),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return await self.get_order(int(row["id"]))
+
     async def usual_for_item(
         self, chef_id: int, catalog_id: int
     ) -> dict[str, Any] | None:

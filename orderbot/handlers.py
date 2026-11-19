@@ -108,6 +108,7 @@ from .nlu import ParsedOrder, detect_intent, parse_local, parse_number
 from .slots import default_time as slot_default_time
 from .slots import parse_slots, slot_labels
 from .stt import Transcriber
+from .sanity import DUP_WINDOW_MIN, is_duplicate, suspicious_items
 from .units import canon_unit, format_qty, pack_size, plural, price_per_unit
 
 log = logging.getLogger(__name__)
@@ -365,6 +366,57 @@ def prune_locks() -> int:
                 mapping.pop(key, None)
                 removed += 1
     return removed
+
+
+async def _duplicate_order(
+    message: Message, db: Database, draft: dict
+) -> bool:
+    """True — этот заказ клиент уже отправил только что: второй раз не создаём."""
+    chef_id = int(message.from_user.id)
+    recent = await db.recent_order(chef_id, DUP_WINDOW_MIN)
+    if not recent:
+        return False
+    if not is_duplicate(draft.get("items") or [], recent.get("items") or []):
+        return False
+    total = float(recent.get("total") or 0)
+    await message.answer(
+        "⚠️ Похоже, вы уже отправили этот заказ — "
+        f"№{recent['id']} на {money(total)}.\n"
+        "Повторно не создаю, чтобы не задвоить доставку.\n"
+        "Если нужен ещё такой же — измените количество или напишите менеджеру."
+    )
+    log.info("Дубль заказа от %s отклонён (похож на №%s)", chef_id, recent["id"])
+    return True
+
+
+async def _warn_quantity(
+    message: Message, db: Database, draft: dict
+) -> None:
+    """Короткое уточнение, если количество выглядит опечаткой. Заказ не блокирует."""
+    items = draft.get("items") or []
+    if not items:
+        return
+    usual_max = await db.max_qty_per_item(int(message.from_user.id))
+    bad = suspicious_items(items, usual_max)
+    if not bad:
+        return
+    lines = ["🤔 <b>Проверьте количество</b>"]
+    for item, usual in bad:
+        name = item.get("name") or item.get("raw") or "позиция"
+        unit = item.get("unit") or item.get("catalog_unit") or ""
+        line = f"• {esc(name)}: <b>{format_qty(float(item.get('qty') or 0))} {esc(str(unit))}</b>"
+        if usual:
+            line += f" — обычно вы берёте {format_qty(usual)} {esc(str(unit))}"
+        lines.append(line)
+    lines.append("")
+    lines.append(
+        "Если всё верно — ничего делать не нужно, заказ уже у менеджера. "
+        "Если ошиблись — /cancel и пришлите заново."
+    )
+    try:
+        await message.answer("\n".join(lines))
+    except Exception:
+        log.debug("Не удалось отправить предупреждение о количестве", exc_info=True)
 
 
 async def _advance_draft(
@@ -682,7 +734,13 @@ async def _process_order_serial(
         await _apply_cutoff(draft, db, settings)
         await _apply_stock(draft, db, catalog)
         await _apply_units(draft, db, catalog)
+        if await _duplicate_order(message, db, draft):
+            await status.edit_text(
+                "Такой заказ уже есть — новый не создаю. Подробности выше."
+            )
+            return
         await db.create_draft(draft)
+        await _warn_quantity(message, db, draft)
         await db.log_parse(
             chef_id=message.from_user.id,
             chat_id=message.chat.id,
