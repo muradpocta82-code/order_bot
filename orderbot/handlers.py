@@ -638,12 +638,22 @@ async def _advance_draft(
             order["venue"] = user["venue"]
 
         manager_sent = False
-        if manager is not None:
+        # D4: если на смене есть упаковщики — заказ идёт тому, кто дольше ждал
+        recipient = manager
+        assigned = await db.pick_packer()
+        if assigned and manager is not None and assigned != manager:
+            recipient = assigned
+            try:
+                await db.assign_order(order_id, assigned)
+            except Exception:
+                log.warning("Не удалось назначить заказ №%s", order_id, exc_info=True)
+                recipient = manager
+        if recipient is not None:
             card_id: int | None = None
             try:
                 card_id = await _send_order_card(
                     bot,
-                    manager,
+                    recipient,
                     order,
                     "🆕 Новый заказ",
                     manager_status_keyboard(order_id, "new"),
@@ -661,7 +671,7 @@ async def _advance_draft(
                         await db.set_order_cards(order_id, manager_card=card_id)
                     except Exception:
                         log.warning("Не удалось сохранить id карточки заказа №%s", order_id)
-                log.info("Заказ №%s отправлен менеджеру %s", order_id, manager)
+                log.info("Заказ №%s отправлен упаковщику %s", order_id, recipient)
 
         if manager is None:
             text = format_client_order(order, "📦 Заказ")
@@ -2687,9 +2697,45 @@ async def cmd_staff(message: Message, db: Database, settings: Settings) -> None:
     lines = ["👥 <b>Сотрудники</b>", ""]
     for row in rows:
         role = "упаковщик" if row["role"] == "manager" else "курьер"
-        lines.append(f"• {esc(row.get('name') or '')} — {role}, id <code>{row['user_id']}</code>")
-    lines.append("\nУдалить: <code>/staff_del id</code>")
+        shift = "🟢 на смене" if row.get("on_shift") else "🌙 не на смене"
+        lines.append(
+            f"• {esc(row.get('name') or '')} — {role}, id <code>{row['user_id']}</code> · {shift}"
+        )
+    lines.append("")
+    lines.append("Смена: сотрудник сам пишет /shift on или /shift off.")
+    lines.append("Удалить: <code>/staff_del id</code>")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("shift"))
+async def cmd_shift(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Смена сотрудника: /shift on|off (D4)."""
+    user_id = message.from_user.id
+    rows = [row for row in await db.list_staff() if int(row["user_id"]) == user_id]
+    if not rows and not _is_manager(settings, user_id, message.chat.id):
+        await message.answer("Вы не в списке сотрудников. Смену ставит менеджер.")
+        return
+    arg = (command.args or "").strip().lower()
+    if arg not in ("on", "off", "вкл", "выкл", "1", "0"):
+        current = "на смене" if rows and rows[0].get("on_shift") else "не на смене"
+        await message.answer(
+            f"Вы {current}.\n"
+            "Встать: <code>/shift on</code>, уйти: <code>/shift off</code>.\n"
+            "На смене упаковщики получают новые заказы по кругу; вне смены — только в /queue."
+        )
+        return
+    on_shift = arg in ("on", "вкл", "1")
+    if not rows:
+        await message.answer("Для начала менеджер должен добавить вас в сотрудники.")
+        return
+    await db.set_staff_shift(user_id, on_shift)
+    await message.answer(
+        "✅ Вы на смене: новые заказы будут приходить вам."
+        if on_shift
+        else "🌙 Вы не на смене: заказы останутся в /queue, карточки не придут."
+    )
 
 
 @router.message(Command("staff_add"))

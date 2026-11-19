@@ -1583,6 +1583,58 @@ class Database:
         cursor = await self.conn.execute(sql, params)
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def set_staff_shift(self, user_id: int, on_shift: bool) -> bool:
+        """Ставит сотрудника на смену или снимает с неё (D4)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "UPDATE staff SET on_shift = %s WHERE user_id = %s AND active",
+            (bool(on_shift), int(user_id)),
+        )
+        await self.conn.commit()
+        return int(cursor.rowcount or 0) == 1
+
+    async def staff_on_shift(self, role: str = "manager") -> list[dict[str, Any]]:
+        """Кто сейчас на смене в указанной роли."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT * FROM staff WHERE active AND on_shift AND role = %s "
+            "ORDER BY last_order_at NULLS FIRST, user_id",
+            (role,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def pick_packer(self) -> int | None:
+        """Упаковщик на смене, который дольше всех не получал заказ (по кругу)."""
+        rows = await self.staff_on_shift("manager")
+        if not rows:
+            return None
+        return int(rows[0]["user_id"])
+
+    async def assign_order(self, order_id: int, user_id: int) -> None:
+        """Запоминает, кому отдан заказ, и отмечает занятость сотрудника."""
+        assert self.conn is not None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            "UPDATE orders SET assigned_to = %s WHERE id = %s",
+            (int(user_id), int(order_id)),
+        )
+        await self.conn.execute(
+            "UPDATE staff SET last_order_at = %s WHERE user_id = %s",
+            (now, int(user_id)),
+        )
+        await self.conn.commit()
+
+    async def assigned_staff(self, order_id: int) -> dict[str, Any] | None:
+        """Сотрудник, которому отдан заказ."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT s.* FROM staff s JOIN orders o ON o.assigned_to = s.user_id "
+            "WHERE o.id = %s",
+            (int(order_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def cash_report(self, day: str) -> dict[str, Any]:
         """Наличные за день: ожидалось, получено, расхождения."""
         assert self.conn is not None

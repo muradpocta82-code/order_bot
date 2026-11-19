@@ -293,10 +293,14 @@ async def _escalation_loop(bot: Bot, db: Database, settings: Settings) -> None:
             for order in await db.stale_new_orders(15):
                 if not await db.claim_escalation(int(order["id"])):
                     continue
+                who = await db.assigned_staff(int(order["id"]))
+                tail = ""
+                if who is not None:
+                    tail = f" Назначен: {who.get('name') or who.get('user_id')}."
                 await bot.send_message(
                     int(manager),
                     f"⏰ Заказ №{order['id']} ждёт принятия больше 15 минут. "
-                    f"Сумма: {order.get('total')} USD",
+                    f"Сумма: {order.get('total')} USD.{tail}",
                     reply_markup=manager_status_keyboard(int(order["id"]), "new"),
                 )
                 log.info("Эскалация: заказ №%s не принят", order["id"])

@@ -1544,6 +1544,30 @@ async def test_races() -> None:
                 str(fresh.get("paid_amount")),
             )
 
+            # 3b. Смены и назначение заказа упаковщику (D4)
+            packer_a, packer_b = 8001, 8002
+            await db.add_staff(packer_a, "manager", "Пакер А")
+            await db.add_staff(packer_b, "manager", "Пакер Б")
+            on_shift = {int(row["user_id"]) for row in await db.staff_on_shift("manager")}
+            check("оба на смене по умолчанию", {packer_a, packer_b} <= on_shift, str(on_shift))
+            first = await db.pick_packer()
+            check("упаковщик выбран", first in (packer_a, packer_b), str(first))
+            await db.assign_order(order_id, int(first))
+            assigned = await db.assigned_staff(order_id)
+            check("назначение записано", assigned is not None and int(assigned["user_id"]) == int(first))
+            second = await db.pick_packer()
+            check(
+                "следующий заказ — другому упаковщику",
+                second is not None and int(second) != int(first),
+                f"{first} → {second}",
+            )
+            await db.set_staff_shift(int(first), False)
+            after_off = {int(row["user_id"]) for row in await db.staff_on_shift("manager")}
+            check("снятый со смены не получает", int(first) not in after_off, str(after_off))
+            check("смена записана в базе", await db.set_staff_shift(int(first), True) is True)
+            for uid in (packer_a, packer_b):
+                await db.remove_staff(uid)
+
             # 4. Перенос недоставленного заказа (D7)
             await db.transition_order(order_id, ("delivering",), "ready")
             check("подготовлено: заказ собран", (await db.get_order(order_id))["status"] == "ready")
