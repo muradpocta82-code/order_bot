@@ -251,6 +251,92 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_ledger_math() -> None:
+    print("\n[книга расчётов: зачёт FIFO]")
+    from orderbot.ledger import balances, differences, fifo_allocate, open_amount
+
+    check("остаток по заказу", open_amount({"total": 100, "paid_amount": 40}) == 60.0)
+    check("оплаченный заказ — ноль", open_amount({"total": 100, "paid_amount": 100}) == 0.0)
+    check(
+        "отменённый не в счёт",
+        open_amount({"total": 100, "paid_amount": 0, "status": "cancelled"}) == 0.0,
+    )
+    orders = [
+        {"id": 1, "total": 50, "paid_amount": 0},
+        {"id": 2, "total": 30, "paid_amount": 10},
+        {"id": 3, "total": 40, "paid_amount": 40},
+    ]
+    allocations, advance = fifo_allocate(60, orders)
+    check("первый заказ закрыт", (1, 50.0) in allocations, str(allocations))
+    check("второй частично", (2, 10.0) in allocations, str(allocations))
+    check("оплаченный не трогаем", all(order_id != 3 for order_id, _ in allocations), str(allocations))
+    check("аванса нет", advance == 0.0, str(advance))
+    allocations2, advance2 = fifo_allocate(200, orders)
+    check("всё закрыто", sum(amount for _, amount in allocations2) == 70.0, str(allocations2))
+    check("осталось авансом", advance2 == 130.0, str(advance2))
+    check("пустой платёж", fifo_allocate(0, orders) == ([], 0.0))
+    cancelled = [{"id": 9, "total": 100, "paid_amount": 0, "status": "cancelled"}]
+    check("отменённые пропускаются", fifo_allocate(50, cancelled) == ([], 50.0))
+
+    result = balances({1: 100.0}, {1: 40.0}, {1: 10.0})
+    check("долг с зачётом", result == {1: 50.0}, str(result))
+    empty = balances({}, {})
+    check("пустые балансы", empty == {})
+    diff = differences({1: 50.0, 2: 0.0}, {1: 40.0, 2: 0.0})
+    check("расхождение найдено", diff == {1: (50.0, 40.0)}, str(diff))
+    check("мелкая разница — не расхождение", differences({1: 50.0}, {1: 50.005}) == {})
+
+
+async def test_ledger_db() -> None:
+    print("\n[книга расчётов: платёж одной суммой за несколько заказов]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9101
+            await db.ensure_user(client, "Опт Тест")
+            ids = []
+            for total in (40.0, 30.0, 20.0):
+                draft = {
+                    "id": f"ledger-{total}",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-22",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                }
+                items = [{"catalog_id": 4, "name": "Куриное филе", "qty": total / 10,
+                          "unit": "кг", "price": 10.0, "total": total}]
+                ids.append(await db.create_order(draft, items, None))
+            result = await db.add_payment(client, 60.0, method="transfer", note="за неделю")
+            check("платёж записан", result["payment_id"] > 0, str(result))
+            check(
+                "раскидан по двум заказам FIFO",
+                result["allocated"] == [(ids[0], 40.0), (ids[1], 20.0)],
+                str(result["allocated"]),
+            )
+            first = await db.get_order(ids[0])
+            second = await db.get_order(ids[1])
+            third = await db.get_order(ids[2])
+            check("первый закрыт", first["payment_status"] == "paid", str(first["payment_status"]))
+            check("второй частично", float(second["paid_amount"] or 0) == 20.0, str(second["paid_amount"]))
+            check("третий не тронут", float(third["paid_amount"] or 0) == 0.0)
+            result2 = await db.add_payment(client, 50.0, method="cash")
+            check("вторая сумма закрыла второй заказ", result2["allocated"][0] == (ids[1], 10.0), str(result2))
+            check("остаток ушёл в третий", (ids[2], 20.0) in result2["allocated"], str(result2))
+            check("аванс 20", result2["advance"] == 20.0, str(result2["advance"]))
+            totals = await db.ledger_totals()
+            check("итоги книги: оплачено", totals["paid"][client] == 110.0, str(totals["paid"]))
+        finally:
+            await db.close()
+
+
 def test_route_plan() -> None:
     print("\n[маршрут курьера]")
     from orderbot.route import (
@@ -1672,6 +1758,7 @@ async def main() -> int:
     test_costvoice()
     test_settings_router()
     test_route_plan()
+    test_ledger_math()
     test_golden_live()
     test_module_names()
     await test_db()
@@ -1682,6 +1769,7 @@ async def main() -> int:
     await test_locked_db()
     await test_lock_cleanup()
     await test_pending_price()
+    await test_ledger_db()
     await test_races()
     await test_allowed_middleware()
     print("\n" + "=" * 70)

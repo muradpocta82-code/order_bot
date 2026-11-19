@@ -1487,6 +1487,104 @@ class Database:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    # ------------------------------------------------------------------
+    # книга расчётов (B3)
+    # ------------------------------------------------------------------
+    async def client_open_orders(self, client_id: int) -> list[dict[str, Any]]:
+        """Заказы клиента с остатком долга, старые сверху — для зачёта FIFO."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, total, paid_amount, status, created_at FROM orders "
+            "WHERE chef_id = %s AND status != 'cancelled' "
+            "ORDER BY created_at, id",
+            (int(client_id),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_payment(
+        self,
+        client_id: int,
+        amount: float,
+        method: str = "cash",
+        note: str = "",
+        source: str = "manager",
+    ) -> dict[str, Any]:
+        """Принятая сумма: пишет платёж и раскидывает его по заказам FIFO (B3).
+
+        Старые поля заказа (payment_status/paid_amount) тоже обновляются —
+        до полного перехода отчётов на книгу.
+        """
+        from .ledger import fifo_allocate, open_amount
+
+        assert self.conn is not None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        amount = round(float(amount), 2)
+        if amount <= 0:
+            return {"payment_id": 0, "allocated": [], "advance": 0.0}
+        cursor = await self.conn.execute(
+            "INSERT INTO payments(client_id, amount, method, ts, note, source) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (int(client_id), amount, method, now, note, source),
+        )
+        row = await cursor.fetchone()
+        payment_id = int(row["id"])
+        orders = await self.client_open_orders(client_id)
+        allocations, advance = fifo_allocate(amount, orders)
+        by_id = {int(order["id"]): order for order in orders}
+        for order_id, part in allocations:
+            await self.conn.execute(
+                "INSERT INTO allocations(payment_id, order_id, amount, created_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (payment_id, int(order_id), part, now),
+            )
+            order = by_id[order_id]
+            paid_total = round(float(order.get("paid_amount") or 0) + part, 2)
+            total = float(order.get("total") or 0)
+            closed = paid_total + 0.005 >= total
+            await self.conn.execute(
+                "UPDATE orders SET paid_amount = %s, payment_status = %s, "
+                "paid_at = COALESCE(paid_at, %s) WHERE id = %s",
+                (paid_total, "paid" if closed else "unpaid", now, int(order_id)),
+            )
+        await self.conn.execute(
+            "UPDATE payments SET note = %s WHERE id = %s",
+            (
+                (note + (" | аванс" if advance > 0 else "")).strip(" |"),
+                payment_id,
+            ),
+        )
+        await self.conn.commit()
+        return {
+            "payment_id": payment_id,
+            "allocated": allocations,
+            "advance": advance,
+        }
+
+    async def ledger_totals(self) -> dict[str, dict[int, float]]:
+        """Итоги книги по клиентам: выставлено, оплачено, зачтено (B3)."""
+        assert self.conn is not None
+        billed: dict[int, float] = {}
+        paid: dict[int, float] = {}
+        credited: dict[int, float] = {}
+        cursor = await self.conn.execute(
+            "SELECT chef_id, SUM(total) AS s FROM orders "
+            "WHERE chef_id IS NOT NULL AND status != 'cancelled' "
+            "GROUP BY chef_id"
+        )
+        for row in await cursor.fetchall():
+            billed[int(row["chef_id"])] = float(row["s"] or 0)
+        cursor = await self.conn.execute(
+            "SELECT client_id, SUM(amount) AS s FROM payments GROUP BY client_id"
+        )
+        for row in await cursor.fetchall():
+            paid[int(row["client_id"])] = float(row["s"] or 0)
+        cursor = await self.conn.execute(
+            "SELECT client_id, SUM(amount) AS s FROM credit_notes GROUP BY client_id"
+        )
+        for row in await cursor.fetchall():
+            credited[int(row["client_id"])] = float(row["s"] or 0)
+        return {"billed": billed, "paid": paid, "credited": credited}
+
     async def client_orders_between(
         self, chef_id: int, start: str, end: str
     ) -> list[dict[str, Any]]:
