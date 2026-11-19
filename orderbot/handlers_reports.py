@@ -737,6 +737,44 @@ async def cmd_quiet(
     )
 
 
+@router.message(Command("webapp"))
+async def cmd_webapp(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Открытия и заказы из мини-приложения каталога (G5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    days = 28
+    raw = (command.args or "").strip()
+    if raw.isdigit():
+        days = max(1, min(365, int(raw)))
+    stats = await db.webapp_stats(days)
+    lines = [f"📱 <b>Мини-приложение каталога</b> за {days} дней", ""]
+    lines.append(f"Открытий: <b>{stats['opens']}</b> · клиентов: <b>{stats['users']}</b>")
+    lines.append(
+        f"Заказов из каталога: <b>{stats['orders']}</b>"
+        f" · клиентов: <b>{stats['orders_users']}</b>"
+    )
+    if stats["orders"]:
+        share = stats["orders_users"] / max(1, stats["users"]) * 100
+        lines.append(f"Доля открывших, кто заказал: <b>{share:.0f}%</b>")
+    lines.append("")
+    if stats["opens"] == 0:
+        lines.append(
+            "⚠️ За это время каталог не открывали ни разу. Если так и останется — "
+            "мини-апп можно отключить: systemctl disable --now order_bot_web "
+            "(минус ~200 МБ памяти). Каталог в боте остаётся: /price."
+        )
+    elif stats["users"] and stats["orders_users"] / stats["users"] < 0.2:
+        lines.append(
+            "⚠️ Открывают, но почти не заказывают. Стоит спросить клиентов, что мешает, "
+            "или отключить каталог: systemctl disable --now order_bot_web"
+        )
+    else:
+        lines.append("✅ Каталогом пользуются — оставляем.")
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("golden"))
 async def cmd_golden(
     message: Message, command: CommandObject, db: Database, settings: Settings

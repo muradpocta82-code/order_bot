@@ -242,6 +242,50 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_webapp_light() -> None:
+    print("\n[мини-апп: JSON-каталог и подпись]")
+    import hashlib
+    import hmac
+    import json
+    import tempfile
+    import time
+    from pathlib import Path
+    from urllib.parse import urlencode
+
+    from orderbot.catalog import Catalog
+    from webapp import server as web
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "catalog.json"
+        count = CATALOG.dump_json(path)
+        check("JSON записан целиком", count == len(CATALOG.items), f"{count}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        first = payload["items"][0]
+        check("поля позиции", {"id", "name", "unit", "price"} <= set(first), str(first))
+        check("обновление записано", bool(payload.get("updated")))
+        check("временный файл убран", not (Path(tmp) / "catalog.json.tmp").exists())
+
+    # подпись Telegram считается без aiogram
+    token = "123456:TEST-TOKEN"
+    pairs = {"auth_date": str(int(time.time())), "user": '{"id": 42}'}
+    check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    sig = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    good = urlencode({**pairs, "hash": sig})
+    check("правильная подпись проходит", web.check_init_data(good, token))
+    check("битая подпись не проходит", not web.check_init_data(good, "другойтокен"))
+    check("без подписи отказ", not web.check_init_data("auth_date=1&user=%7B%7D", token))
+    check("пустые данные отказ", not web.check_init_data("", token))
+    old = {"auth_date": str(int(time.time()) - 90000), "user": '{"id": 42}'}
+    check_string_old = "\n".join(f"{k}={v}" for k, v in sorted(old.items()))
+    sig_old = hmac.new(secret, check_string_old.encode(), hashlib.sha256).hexdigest()
+    check(
+        "просроченная подпись не проходит",
+        not web.check_init_data(urlencode({**old, "hash": sig_old}), token),
+    )
+    check("каталог читается из JSON", callable(web.load_catalog))
+
+
 def test_batch_questions() -> None:
     print("\n[пакетные уточнения]")
     from orderbot.batchq import (
@@ -1106,6 +1150,7 @@ async def main() -> int:
     test_sanity_checks()
     test_local_money()
     test_batch_questions()
+    test_webapp_light()
     test_golden_live()
     test_module_names()
     await test_db()

@@ -354,7 +354,30 @@ async def _run_maintenance(db: Database) -> None:
         log.info("VACUUM базы выполнен")
 
 
-async def _maintenance_loop(db: Database) -> None:
+def _dump_catalog_json(catalog: Catalog, settings: Settings) -> None:
+    """Отдаёт прайс мини-аппу в JSON: он больше не читает Excel (G4)."""
+    target = settings.data_dir / "catalog.json"
+    try:
+        count = catalog.dump_json(target)
+        log.info("Каталог для мини-аппа: %s позиций → %s", count, target)
+    except Exception as exc:
+        log.warning("Не удалось записать %s: %s", target, exc)
+
+
+def _catalog_json_stale(catalog: Catalog, settings: Settings) -> bool:
+    """Excel новее JSON — прайс правили файлом, надо пересобрать."""
+    target = settings.data_dir / "catalog.json"
+    try:
+        if not target.exists():
+            return True
+        return settings.catalog_path.stat().st_mtime > target.stat().st_mtime
+    except OSError:
+        return False
+
+
+async def _maintenance_loop(
+    db: Database, catalog: Catalog | None = None, settings: Settings | None = None
+) -> None:
     first = True
     while True:
         await asyncio.sleep(60 if first else 6 * 3600)
@@ -363,6 +386,8 @@ async def _maintenance_loop(db: Database) -> None:
             await _run_maintenance(db)
         except Exception as exc:
             log.warning("Ошибка обслуживания БД: %s", exc)
+        if catalog is not None and _catalog_json_stale(catalog, settings):
+            _dump_catalog_json(catalog, settings)
 
 
 async def _resend_unnotified(bot: Bot, db: Database, settings: Settings) -> None:
@@ -913,6 +938,7 @@ async def run() -> int:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     try:
         catalog = Catalog.load(settings.catalog_path)
+        _dump_catalog_json(catalog, settings)
     except Exception as exc:
         log.critical("Не удалось загрузить прайс %s: %s", settings.catalog_path, exc)
         return 3
@@ -1053,7 +1079,7 @@ async def run() -> int:
         _backup_send_loop(bot, db, settings), name="backup-send"
     )
     maintenance_task = asyncio.create_task(
-        _maintenance_loop(db), name="db-maintenance"
+        _maintenance_loop(db, catalog, settings), name="db-maintenance"
     )
     evening_task = asyncio.create_task(
         _evening_loop(bot, db, settings), name="evening-summary"

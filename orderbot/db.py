@@ -1182,6 +1182,38 @@ class Database:
         row = await cursor.fetchone()
         return int(list(dict(row).values())[0]) if row else 0
 
+    async def webapp_stats(self, days: int = 28) -> dict[str, int]:
+        """Открытия и заказы из мини-приложения за период (G5)."""
+        assert self.conn is not None
+        cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        result = {"opens": 0, "users": 0, "orders": 0, "orders_users": 0}
+        try:
+            result["opens"] = await self._count(
+                "SELECT COUNT(*) AS c FROM webapp_events "
+                "WHERE kind = 'open' AND ts >= %s",
+                (cutoff,),
+            )
+            result["users"] = await self._count(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM webapp_events "
+                "WHERE kind = 'open' AND ts >= %s",
+                (cutoff,),
+            )
+            result["orders"] = await self._count(
+                "SELECT COUNT(*) AS c FROM webapp_events "
+                "WHERE kind = 'order' AND ts >= %s",
+                (cutoff,),
+            )
+            result["orders_users"] = await self._count(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM webapp_events "
+                "WHERE kind = 'order' AND ts >= %s",
+                (cutoff,),
+            )
+        except Exception:
+            log.warning("Статистика мини-аппа недоступна", exc_info=True)
+        return result
+
     async def client_funnel(self, active_days: int = 30) -> dict[str, int]:
         """Воронка клиентов: заявки → допущены → первый заказ → активные."""
         cutoff = (datetime.now() - timedelta(days=active_days)).strftime(

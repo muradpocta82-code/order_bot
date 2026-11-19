@@ -1,8 +1,10 @@
 """Прайс-лист: загрузка catalog.xlsx, нормализация и нечёткий поиск."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -189,6 +191,36 @@ class Catalog:
                 continue
             seen.add(norm)
             self._phrases.append((item, norm, lemmatize(norm)))
+
+    def dump_json(self, path: str | Path) -> int:
+        """Пишет прайс в JSON: мини-апп читает его вместо Excel (G4).
+
+        Возвращает число позиций. Запись атомарная: сначала .tmp, потом rename,
+        чтобы каталог не увидел половину файла.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "items": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "unit": item.unit,
+                    "pack": item.pack,
+                    "price": round(float(item.price or 0), 2),
+                    "category": item.category or "",
+                    "stock": item.stock,
+                }
+                for item in self.items
+            ],
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        tmp.replace(path)
+        return len(self.items)
 
     def get(self, item_id: int | None) -> CatalogItem | None:
         if item_id is None:
