@@ -29,7 +29,16 @@ from orderbot.drafts import (  # noqa: E402
     order_items_payload,
 )
 from orderbot.formatting import format_draft  # noqa: E402
-from orderbot.migrations import LATEST_VERSION  # noqa: E402
+def _latest_schema_version() -> int:
+    files = sorted(
+        int(p.name[:4])
+        for p in (Path(__file__).resolve().parent.parent / "migrations").glob("*.sql")
+        if p.name[:4].isdigit()
+    )
+    return files[-1] if files else 0
+
+
+LATEST_VERSION = _latest_schema_version()
 from orderbot.nlu import detect_intent, parse_local, parse_number  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tashkent")

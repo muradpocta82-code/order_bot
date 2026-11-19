@@ -19,7 +19,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from orderbot.ai import _is_quota_error, _retry_delay_seconds  # noqa: E402
-from orderbot.backup import backup_database  # noqa: E402
 from orderbot.catalog import Catalog, diff_catalogs  # noqa: E402
 from orderbot.db import Database, reset_test_database  # noqa: E402
 from orderbot.drafts import (  # noqa: E402
@@ -29,7 +28,17 @@ from orderbot.drafts import (  # noqa: E402
     order_items_payload,
 )
 from orderbot.formatting import format_draft  # noqa: E402
-from orderbot.migrations import LATEST_VERSION  # noqa: E402
+def _latest_schema_version() -> int:
+    """Версия схемы = последний номер файла в migrations/*.sql."""
+    files = sorted(
+        int(p.name[:4])
+        for p in (Path(__file__).resolve().parent.parent / "migrations").glob("*.sql")
+        if p.name[:4].isdigit()
+    )
+    return files[-1] if files else 0
+
+
+LATEST_VERSION = _latest_schema_version()
 from orderbot.nlu import detect_intent, parse_local, parse_number  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tashkent")
@@ -1123,11 +1132,7 @@ async def test_db() -> None:
             "старый неотправленный заказ найден",
             order_id in await db.old_unnotified_orders(15),
         )
-        if db.is_postgres:
-            print("  — бэкап SQLite пропущен (тест на PostgreSQL)")
-        else:
-            backup_path = backup_database(db.path, Path(tmp) / "backups", 2)
-            check("бэкап БД создан", backup_path.exists() and backup_path.stat().st_size > 0)
+        print("  — бэкап SQLite удалён вместе с SQLite-режимом (I2)")
 
         await db.conn.execute(
             "UPDATE drafts SET status = 'cancelled', "

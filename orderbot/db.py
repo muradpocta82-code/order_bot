@@ -1,4 +1,4 @@
-"""Слой хранения: aiosqlite, черновики, заказы, настройки."""
+"""Слой хранения: PostgreSQL (psycopg), черновики, заказы, настройки."""
 from __future__ import annotations
 
 import asyncio
@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import aiosqlite
 
-from .migrations import apply_migrations
 
 log = logging.getLogger("orderbot.db")
 
@@ -103,18 +101,16 @@ class Database:
         self._tx_lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        if self.url:
-            from .pg_psycopg import PsycopgConnection
+        """Подключение к PostgreSQL. SQLite больше не поддерживается (I2)."""
+        if not self.url:
+            raise RuntimeError(
+                "DATABASE_URL не задан: бот работает только с PostgreSQL. "
+                "SQLite-режим удалён 19.11.2026."
+            )
+        from .pg_psycopg import PsycopgConnection
 
-            self.conn = PsycopgConnection(self.url)
-            await self.conn.connect()
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = await aiosqlite.connect(self.path)
-        self.conn.row_factory = aiosqlite.Row
-        await self.conn.execute("PRAGMA journal_mode=WAL")
-        await self.conn.execute("PRAGMA foreign_keys=ON")
-        await self.conn.commit()
+        self.conn = PsycopgConnection(self.url)
+        await self.conn.connect()
 
     async def close(self) -> None:
         if self.conn is not None:
@@ -122,14 +118,11 @@ class Database:
             self.conn = None
 
     async def init(self) -> None:
-        """PostgreSQL: схему строят файлы migrations/*.sql (scripts/migrate.py).
+        """Оставлено для совместимости: схему строит scripts/migrate.py.
 
-        Старый in-code раннер оставлен только для SQLite-режима.
+        Раньше здесь был in-code раннер для SQLite; он удалён 19.11.2026 (I2).
         """
-        assert self.conn is not None
-        if self.is_postgres:
-            return
-        await apply_migrations(self.conn)
+        return
 
     def _tx(self):
         """Транзакция: psycopg даёт свою, для pg8000 — ручная."""

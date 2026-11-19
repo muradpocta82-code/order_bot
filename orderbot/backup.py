@@ -1,9 +1,8 @@
-"""Горячий бэкап SQLite без остановки бота."""
+"""Бэкап PostgreSQL: SQLite-ветка удалена 19.11.2026 (I2)."""
 from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import subprocess
 import time
 from datetime import datetime
@@ -11,51 +10,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
-
-
-def backup_database(db_path: str | Path, backup_dir: str | Path, keep: int = 14) -> Path:
-    """Делает согласованный снимок БД через sqlite3 backup API.
-
-    Безопасно при включённом WAL: читает БД целиком, не блокируя запись.
-    """
-    db_path = Path(db_path)
-    backup_dir = Path(backup_dir)
-    if not db_path.exists():
-        raise FileNotFoundError(f"База не найдена: {db_path}")
-    if keep < 1:
-        raise ValueError("keep должен быть >= 1")
-
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = backup_dir / f"orderbot-{stamp}.db"
-    suffix = 1
-    while target.exists():
-        target = backup_dir / f"orderbot-{stamp}-{suffix}.db"
-        suffix += 1
-
-    source = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
-    destination = sqlite3.connect(target)
-    try:
-        source.backup(destination)
-        check = destination.execute("PRAGMA integrity_check").fetchone()
-        if not check or check[0] != "ok":
-            raise RuntimeError(f"бэкап не прошёл integrity_check: {check}")
-    except Exception:
-        source.close()
-        destination.close()
-        target.unlink(missing_ok=True)
-        raise
-    else:
-        source.close()
-        destination.close()
-
-    backups = sorted(backup_dir.glob("orderbot-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for old in backups[keep:]:
-        try:
-            old.unlink()
-        except OSError:
-            log.warning("Не удалось удалить старый бэкап %s", old)
-    return target
 
 
 HOURLY_KEEP = 48   # снимков каждый час
