@@ -1,0 +1,12 @@
+[Unit]
+Description=Order bot: копия бэкапа базы вне сервера (rclone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/opt/order_bot/.env
+ExecStart=/usr/bin/env bash /opt/order_bot/scripts/offsite_backup.sh
+Nice=10
+IOSchedulingClass=idle

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -102,6 +103,36 @@ def check_deployment(settings) -> bool:
 
     swap_ok = len(Path("/proc/swaps").read_text(encoding="utf-8").splitlines()) > 1
     print(f"{OK if swap_ok else WARN} swap: {'есть' if swap_ok else 'нет'}")
+
+    # A4: внешний мониторинг (Healthchecks). Пока не настроен — предупреждение, не ошибка.
+    heartbeat = (os.getenv("HEARTBEAT_URL") or "").strip()
+    if not heartbeat:
+        try:
+            for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+                if line.startswith("HEARTBEAT_URL="):
+                    heartbeat = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    print(
+        f"{OK if heartbeat else WARN} внешний мониторинг (HEARTBEAT_URL): "
+        f"{'подключён' if heartbeat else 'не настроен — docs/MONITORING.md'}"
+    )
+
+    # A2: копия бэкапа вне сервера (rclone). Пока не настроена — предупреждение.
+    offsite = (os.getenv("OFFSITE_REMOTE") or "").strip()
+    if not offsite:
+        try:
+            for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+                if line.startswith("OFFSITE_REMOTE="):
+                    offsite = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    print(
+        f"{OK if offsite else WARN} копия бэкапа вне сервера: "
+        f"{'настроена' if offsite else 'не настроена — docs/OFFSITE_BACKUP.md'}"
+    )
 
     files = sorted(
         int(p.name[:4])
