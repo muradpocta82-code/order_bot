@@ -1292,7 +1292,8 @@ class Database:
             "%Y-%m-%d %H:%M:%S"
         )
         cursor = await self.conn.execute(
-            "SELECT i.catalog_id, i.name, i.qty, i.price, o.chef_id, o.chef_name "
+            "SELECT i.catalog_id, i.name, i.qty, i.price, o.chef_id, o.chef_name, "
+            "o.created_at AS created_at "
             "FROM order_items i "
             "JOIN orders o ON o.id = i.order_id "
             "WHERE o.status = 'done' AND o.created_at >= %s",

@@ -32,6 +32,8 @@ from .keyboards import (
 from . import golden as golden_mod
 from . import margins as margins_mod
 from .clientcard import card_text
+from .handlers_client import _costs_from_text
+from .pending import take_pending_costs
 from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
@@ -398,6 +400,18 @@ async def cmd_margin(
     catalog = _Catalog.load(settings.catalog_path)
     costs = await db.costs_map()
     rows = await db.sold_items(days)
+    # B5: если есть история закупок — берём цену, действовавшую на дату заказа
+    cost_cache: dict[tuple[int, str], float | None] = {}
+    for row in rows:
+        catalog_id = row.get("catalog_id")
+        day = str(row.get("created_at") or "")[:10]
+        if not catalog_id or not day:
+            continue
+        key = (int(catalog_id), day)
+        if key not in cost_cache:
+            cost_cache[key] = await db.cost_on(int(catalog_id), day)
+        if cost_cache[key] is not None:
+            row["purchase"] = cost_cache[key]
     revenue = 0.0
     cost = 0.0
     unknown = 0
@@ -740,6 +754,71 @@ async def cmd_quiet(
         f"Тихие часы: {state}.{pending}\n"
         "Поставить: /quiet 23-7 · выключить: /quiet off"
     )
+
+
+@router.message(Command("costvoice"))
+async def cmd_costvoice(
+    message: Message, command: CommandObject, db: Database,
+    settings: Settings, catalog, ai=None, transcriber=None,
+) -> None:
+    """Закупочные цены текстом: /costvoice помидоры 8500, лук 3200 (B5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(
+            "Формат: <code>/costvoice помидоры 8500, лук 3200</code>\n"
+            "Или просто пришлите голосовое с ценами — разберу и покажу список."
+        )
+        return
+    status = await message.answer("Разбираю цены…")
+    await _costs_from_text(message, status, db, settings, catalog, raw)
+
+
+@router.callback_query(F.data.startswith("costok:"))
+async def cb_cost_ok(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Записывает подтверждённые закупочные цены (B5)."""
+    if not await _manager_ok(callback, settings):
+        return
+    token = callback.data.split(":", 1)[1]
+    data = await take_pending_costs(db, token)
+    if data is None:
+        await callback.answer("Список устарел — продиктуйте заново", show_alert=True)
+        return
+    saved = 0
+    for line in data.get("lines") or []:
+        try:
+            catalog_id = int(line.get("catalog_id") or 0)
+            cost = float(line.get("cost") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not catalog_id or cost <= 0:
+            continue
+        await db.set_cost(catalog_id, cost, source="voice")
+        saved += 1
+    try:
+        await callback.message.edit_text(f"✅ Записал закупочные цены: {saved} позиц.")
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Записал")
+
+
+@router.callback_query(F.data.startswith("costno:"))
+async def cb_cost_no(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Отмена списка закупочных цен (B5)."""
+    if not await _manager_ok(callback, settings):
+        return
+    token = callback.data.split(":", 1)[1]
+    await take_pending_costs(db, token)
+    try:
+        await callback.message.edit_text("Цены не изменены.")
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отменил")
 
 
 @router.message(Command("act"))

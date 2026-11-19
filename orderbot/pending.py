@@ -60,6 +60,36 @@ async def take_pending_price(db: Database, token: str) -> dict[str, Any] | None:
     return data
 
 
+COSTS_PREFIX = "pending_costs:"
+
+
+async def put_pending_costs(
+    db: Database, token: str, lines: list[dict], actor_id: int = 0
+) -> None:
+    """Список закупочных цен ждёт подтверждения (переживает перезапуск)."""
+    payload = {"created": time.time(), "actor": int(actor_id), "lines": lines}
+    await db.set_setting(COSTS_PREFIX + str(token), json.dumps(payload, ensure_ascii=False))
+
+
+async def take_pending_costs(db: Database, token: str) -> dict | None:
+    key = COSTS_PREFIX + str(token)
+    raw = await db.get_setting(key)
+    if not raw:
+        return None
+    await db.set_setting(key, "")
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    try:
+        created = float(data.get("created") or 0)
+    except (TypeError, ValueError):
+        created = 0.0
+    if time.time() - created > TTL_SECONDS:
+        return None
+    return data
+
+
 async def purge_pending_prices(db: Database) -> int:
     """Убирает просроченные подтверждения и их файлы. Возвращает число удалённых."""
     removed = 0

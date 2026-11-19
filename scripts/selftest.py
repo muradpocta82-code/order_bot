@@ -242,6 +242,28 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_costvoice() -> None:
+    print("\n[закупки голосом: разбор цен]")
+    from orderbot.costvoice import as_payload, describe, match_lines, parse_pairs
+
+    pairs = parse_pairs("помидоры 8500, лук 3200, огурцы 9000")
+    check("три пары", len(pairs) == 3, str(pairs))
+    check("первая пара", pairs[0][0].lower().startswith("помидор") and pairs[0][1] == 8500, str(pairs[0]))
+    check("цена через запятую", parse_pairs("филе 1,10")[0][1] == 1.10, str(parse_pairs("филе 1,10")))
+    check("двоеточие не мешает", len(parse_pairs("помидоры: 8500; лук: 3200")) == 2)
+    check("без цифр пусто", parse_pairs("просто текст без цен") == [])
+    check("и в начале фразы отброшено", "и" != parse_pairs("и лук 3200")[0][0].lower())
+
+    lines = match_lines([("куриное филе", 3.5), ("невиданный овощ", 10.0)], CATALOG)
+    check("позиция найдена", lines[0].ok and lines[0].catalog_id == 4, str(lines[0]))
+    check("неизвестное не привязано", not lines[1].ok, str(lines[1]))
+    text = describe(lines)
+    check("в тексте подтверждения обе строки", "Не нашёл в прайсе" in text, text)
+    payload = as_payload(lines)
+    check("в запись идут только найденные", len(payload) == 1 and payload[0]["catalog_id"] == 4, str(payload))
+    check("округляет цену", payload[0]["cost"] == 3.5)
+
+
 def test_statement() -> None:
     print("\n[акт сверки]")
     import tempfile
@@ -1532,6 +1554,7 @@ async def main() -> int:
     test_margin_slices()
     test_client_card()
     test_statement()
+    test_costvoice()
     test_golden_live()
     test_module_names()
     await test_db()

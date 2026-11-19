@@ -50,7 +50,9 @@ def collect(
         item = catalog.get(catalog_id) if catalog_id else None
         name = str(row.get("name") or (item.name if item else "позиция"))
         revenue = qty * price
-        purchase = costs.get(catalog_id) if catalog_id else None
+        purchase = row.get("purchase")
+        if purchase is None and catalog_id:
+            purchase = costs.get(catalog_id)
         if purchase is None and item is not None and item.purchase:
             purchase = float(item.purchase)
         cost = qty * float(purchase) if purchase is not None else 0.0

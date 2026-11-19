@@ -468,6 +468,22 @@ def user_access_keyboard(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def costs_confirm_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Подтверждение списка закупочных цен, введённых голосом (B5)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Записать", callback_data=f"costok:{token}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена", callback_data=f"costno:{token}"
+                ),
+            ]
+        ]
+    )
+
+
 def reminder_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

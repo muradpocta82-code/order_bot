@@ -124,7 +124,7 @@ async def _handle_claim(*args, **kwargs):
 def _format_price_diff(*args, **kwargs):
     return _from_handlers()._format_price_diff(*args, **kwargs)
 from .slots import parse_slots, slot_labels
-from .pending import put_pending_price
+from .pending import put_pending_price, put_pending_costs
 from .texts import MANAGER_ONLY_TEXT, RATE_LIMIT_TEXT
 from .stt import Transcriber
 
@@ -170,6 +170,69 @@ async def on_document(
     )
 
 
+async def _costs_from_voice(
+    message: Message,
+    bot: Bot,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    transcriber: Transcriber,
+) -> None:
+    """Менеджер диктует закупочные цены: разбор → подтверждение кнопкой (B5)."""
+    voice = message.voice
+    if voice is None:
+        await message.answer(MANAGER_ONLY_TEXT, reply_markup=manager_panel_keyboard())
+        return
+    status = await message.answer("🎧 Слушаю закупочные цены…")
+    voice_dir = settings.data_dir / "voice"
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    path = voice_dir / f"cost-{voice.file_unique_id}-{message.message_id}.ogg"
+    try:
+        file = await bot.get_file(voice.file_id)
+        await bot.download_file(file.file_path, destination=path)
+        result = await transcriber.transcribe(path)
+    except Exception:
+        log.exception("Ошибка распознавания закупок")
+        await status.edit_text(
+            "Не получилось разобрать голосовое. Напишите: /costvoice помидоры 8500"
+        )
+        return
+    finally:
+        path.unlink(missing_ok=True)
+    await _costs_from_text(
+        message, status, db, settings, catalog, str(result.text or "")
+    )
+
+
+async def _costs_from_text(
+    message: Message,
+    status: Message,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+    text: str,
+) -> None:
+    """Общая часть для голоса и текста: разбор и подтверждение списка цен."""
+    from .costvoice import as_payload, describe, match_lines, parse_pairs, sample_text, total_of
+    from .keyboards import costs_confirm_keyboard
+
+    pairs = parse_pairs(text)
+    if not pairs:
+        await status.edit_text(sample_text(text))
+        return
+    lines = match_lines(pairs, catalog)
+    payload = as_payload(lines)
+    if not payload:
+        await status.edit_text(describe(lines))
+        return
+    token = secrets.token_hex(4)
+    await put_pending_costs(db, token, payload, message.from_user.id)
+    await status.edit_text(
+        describe(lines) + f"\n\nНайдено позиций: {total_of(lines)}. Записать?",
+        reply_markup=costs_confirm_keyboard(token),
+    )
+
+
 @router.message(F.voice)
 async def on_voice(
     message: Message,
@@ -184,7 +247,7 @@ async def on_voice(
     if voice is None:
         return
     if _is_manager(settings, message.from_user.id, message.chat.id):
-        await message.answer(MANAGER_ONLY_TEXT, reply_markup=manager_panel_keyboard())
+        await _costs_from_voice(message, bot, db, settings, catalog, transcriber)
         return
     if await db.count_orders_since(message.from_user.id, 60) >= 20:
         await message.answer(RATE_LIMIT_TEXT)
