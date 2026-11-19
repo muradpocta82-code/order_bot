@@ -32,6 +32,7 @@ from .keyboards import (
 from . import golden as golden_mod
 from . import margins as margins_mod
 from .clientcard import card_text
+from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
@@ -739,6 +740,78 @@ async def cmd_quiet(
         f"Тихие часы: {state}.{pending}\n"
         "Поставить: /quiet 23-7 · выключить: /quiet off"
     )
+
+
+@router.message(Command("act"))
+async def cmd_act(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Акт сверки с клиентом за период: PDF в чат менеджеру (B4)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().split()
+    if not raw or not raw[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/act ID [дней]</code> — акт сверки с клиентом за период "
+            "(по умолчанию 30 дней). ID есть в /client и /debt."
+        )
+        return
+    chef_id = int(raw[0])
+    days = 30
+    if len(raw) > 1 and raw[1].isdigit():
+        days = max(1, min(365, int(raw[1])))
+    user = await db.get_user(chef_id)
+    if user is None:
+        await message.answer(f"Клиент с id {chef_id} не найден.")
+        return
+    from datetime import datetime, timedelta
+
+    now = datetime.now(settings.timezone)
+    start_dt = now - timedelta(days=days)
+    start = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end = (now + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    orders = await db.client_orders_between(chef_id, start, end)
+    notes = await db.client_credit_notes(chef_id, start, end)
+    if not orders and not notes:
+        await message.answer(
+            f"За последние {days} дней у клиента нет заказов — акт сверки пустой."
+        )
+        return
+    numbers = statement_totals(orders, notes)
+    target = settings.data_dir / f"act_{chef_id}_{now.strftime('%Y%m%d')}.pdf"
+    try:
+        build_statement(
+            user,
+            orders,
+            target,
+            start_dt.strftime("%d.%m.%Y"),
+            now.strftime("%d.%m.%Y"),
+            notes,
+        )
+    except Exception as exc:
+        log.warning("Не удалось собрать акт сверки для %s: %s", chef_id, exc, exc_info=True)
+        await message.answer("Не получилось собрать PDF. Подробности в журнале бота.")
+        return
+    from aiogram.types import FSInputFile
+
+    venue = user.get("venue") or user.get("name") or f"id{chef_id}"
+    caption = (
+        f"📄 Акт сверки: {venue} за {days} дн.\n"
+        f"Выставлено {money(numbers['billed'])}, оплачено {money(numbers['paid'])}, "
+        f"сальдо {money(numbers['balance'])}."
+    )
+    if notes:
+        caption += f" Кредит-нот: {len(notes)}."
+    try:
+        await message.answer_document(FSInputFile(str(target)), caption=caption)
+    except Exception as exc:
+        log.warning("Не удалось отправить акт сверки: %s", exc)
+        await message.answer(caption)
+    finally:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @router.message(Command("client"))

@@ -242,6 +242,43 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_statement() -> None:
+    print("\n[акт сверки]")
+    import tempfile
+    from pathlib import Path
+
+    from orderbot.statement import build_statement, totals
+
+    orders = [
+        {"id": 1, "created_at": "2026-11-10 10:00:00", "total": 100.0, "status": "done",
+         "payment_status": "paid", "paid_amount": 100.0},
+        {"id": 2, "created_at": "2026-11-15 10:00:00", "total": 55.5, "status": "done",
+         "payment_status": "credit", "paid_amount": None},
+        {"id": 3, "created_at": "2026-11-16 10:00:00", "total": 20.0, "status": "cancelled",
+         "payment_status": "unpaid", "paid_amount": None},
+    ]
+    numbers = totals(orders, [{"amount": 5.5}])
+    check("выставлено без отменённых", numbers["billed"] == 155.5, str(numbers))
+    check("оплачено", numbers["paid"] == 100.0, str(numbers))
+    check("кредит-нота вычтена", numbers["credit"] == 5.5, str(numbers))
+    check("сальдо", round(numbers["balance"], 2) == 50.0, str(numbers))
+    check("пустой период", totals([], []) == {
+        "billed": 0.0, "paid": 0.0, "credit": 0.0, "balance": 0.0,
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "act.pdf"
+        build_statement(
+            {"venue": "Кафе Тест", "phone": "+998 90 000 00 00"},
+            orders,
+            target,
+            "20.10.2026",
+            "19.11.2026",
+            [{"order_id": 2, "created_at": "2026-11-17 12:00:00", "text": "недовес", "amount": 5.5}],
+        )
+        check("PDF создан", target.exists() and target.stat().st_size > 1000, str(target))
+        check("PDF начинается как PDF", target.read_bytes()[:4] == b"%PDF")
+
+
 def test_client_card() -> None:
     print("\n[карточка клиента]")
     from orderbot.clientcard import card_text, frequency_text
@@ -1494,6 +1531,7 @@ async def main() -> int:
     test_week_report()
     test_margin_slices()
     test_client_card()
+    test_statement()
     test_golden_live()
     test_module_names()
     await test_db()

@@ -1493,6 +1493,37 @@ class Database:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def client_orders_between(
+        self, chef_id: int, start: str, end: str
+    ) -> list[dict[str, Any]]:
+        """Заказы клиента за период — для акта сверки (B4)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT * FROM orders WHERE chef_id = %s AND created_at >= %s "
+            "AND created_at <= %s ORDER BY created_at, id",
+            (int(chef_id), start, end),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def client_credit_notes(
+        self, chef_id: int, start: str, end: str
+    ) -> list[dict[str, Any]]:
+        """Претензии клиента с решением «кредит-нота» за период (B4)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT cl.id, cl.order_id, cl.text, cl.status, cl.created_at "
+            "FROM claims cl JOIN orders o ON o.id = cl.order_id "
+            "WHERE o.chef_id = %s AND cl.status = %s "
+            "AND cl.created_at >= %s AND cl.created_at <= %s ORDER BY cl.id",
+            (int(chef_id), "credit", start, end),
+        )
+        notes = []
+        for row in await cursor.fetchall():
+            data = dict(row)
+            data.setdefault("amount", 0)
+            notes.append(data)
+        return notes
+
     async def claims_for_order(self, order_id: int) -> list[dict[str, Any]]:
         assert self.conn is not None
         cursor = await self.conn.execute(
