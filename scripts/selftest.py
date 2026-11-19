@@ -242,6 +242,47 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_route_plan() -> None:
+    print("\n[маршрут курьера]")
+    from orderbot.route import (
+        distance_km,
+        maps_link,
+        parse_coords,
+        plan,
+        total_distance_km,
+    )
+
+    check("координаты из адреса", parse_coords("📍 41.311081, 69.240562") == (41.311081, 69.240562))
+    check("координаты из текста", parse_coords("Ташкент 41.300000, 69.200000 дом 5") is not None)
+    check("без координат — None", parse_coords("улица Навои 1") is None)
+    check("мусор — None", parse_coords("📍 999.0, 999.0") is None)
+    centre = (41.311081, 69.240562)
+    check("расстояние до себя — 0", distance_km(centre, centre) == 0.0)
+    other = (41.321081, 69.240562)
+    check("1 км по широте", 0.5 < distance_km(centre, other) < 1.5, str(distance_km(centre, other)))
+
+    orders = [
+        {"id": 1, "delivery_time": "15:00–18:00", "delivery_address": "📍 41.350000, 69.300000"},
+        {"id": 2, "delivery_time": "09:00–12:00", "delivery_address": "📍 41.320000, 69.250000"},
+        {"id": 3, "delivery_time": "09:00–12:00", "delivery_address": "📍 41.311500, 69.240600"},
+        {"id": 4, "delivery_time": "09:00–12:00", "delivery_address": "улица без геопина"},
+    ]
+    planned = plan(orders, start=centre)
+    check("утро раньше вечера", planned[0]["delivery_time"].startswith("09"), str([o["id"] for o in planned]))
+    check("ближайший первым", planned[0]["id"] == 3, str([o["id"] for o in planned]))
+    check("без геопина в конце слота", planned[2]["id"] == 4, str([o["id"] for o in planned]))
+    check("вечерний последним", planned[-1]["id"] == 1, str([o["id"] for o in planned]))
+    check("ничего не потеряно", len(planned) == 4)
+    check("порядок устойчив", [o["id"] for o in plan(orders, start=centre)] == [o["id"] for o in planned])
+
+    link = maps_link(planned)
+    check("ссылка на карты", link.startswith("https://yandex.com/maps/?rtext="), link)
+    check("в ссылке все точки", link.count("~") == 2, link)
+    check("без координат ссылки нет", maps_link([{"delivery_address": "адрес"}]) == "")
+    check("длина маршрута считается", total_distance_km(planned, centre) > 0)
+    check("пустой день", plan([]) == [] and total_distance_km([]) == 0)
+
+
 def test_settings_router() -> None:
     print("\n[команды расписания вынесены и подключены]")
     from orderbot.handlers import router as main_router
@@ -1581,6 +1622,7 @@ async def main() -> int:
     test_statement()
     test_costvoice()
     test_settings_router()
+    test_route_plan()
     test_golden_live()
     test_module_names()
     await test_db()

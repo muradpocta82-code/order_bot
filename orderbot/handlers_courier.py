@@ -7,17 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 from .config import Settings
 from .db import Database
 from .formatting import esc, format_order, money
+from .route import maps_link, plan as route_plan, total_distance_km
 from .keyboards import (
     failed_move_keyboard,
     client_order_keyboard,
@@ -437,3 +439,59 @@ async def cmd_handover(message: Message, db: Database, settings: Settings) -> No
         f"({len(report['orders'])} заказ(ов)).\n"
         "Пришлите сумму, которую сдаёте (числом). Отмена: /cancel"
     )
+
+
+@router.message(Command("route"))
+async def cmd_route(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Маршрут на день: порядок объезда и ссылка в карты (D5)."""
+    courier_id = settings.courier_chat_id
+    is_courier = courier_id is not None and message.from_user.id == courier_id
+    if not is_courier and not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from datetime import datetime
+
+    raw = (command.args or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        day = raw
+    elif re.fullmatch(r"\d{2}\.\d{2}", raw):
+        now = datetime.now(settings.timezone)
+        day = f"{now.year}-{raw[3:5]}-{raw[0:2]}"
+    else:
+        day = datetime.now(settings.timezone).date().isoformat()
+
+    orders = [
+        order
+        for order in await db.orders_for_date(day)
+        if str(order.get("status")) in ("ready", "delivering")
+    ]
+    if not orders:
+        await message.answer(f"📭 На {day[8:10]}.{day[5:7]} доставок нет.")
+        return
+
+    planned = route_plan(orders)
+    lines = [f"🗺 <b>Маршрут на {day[8:10]}.{day[5:7]}</b>", ""]
+    missing = 0
+    for number, order in enumerate(planned, start=1):
+        name = order.get("chef_name") or order.get("chef_id") or "клиент"
+        slot = order.get("delivery_time") or "без слота"
+        address = str(order.get("delivery_address") or "")
+        if not address.strip().startswith("📍"):
+            address = (address or "адрес не указан")[:60]
+            missing += 1
+        lines.append(f"{number}. №{order.get('id')} {esc(str(name))} · {esc(str(slot))}")
+        lines.append(f"    {esc(address)}")
+    distance = total_distance_km(planned)
+    lines.append("")
+    lines.append(f"Точек: <b>{len(planned)}</b> · по прямой <b>{distance:.1f} км</b>")
+    if missing:
+        lines.append(
+            f"⚠️ У {missing} точек нет геопина — порядок для них примерный. "
+            "Попросите повара отправить геопозицию."
+        )
+    link = maps_link(planned)
+    if link:
+        lines.append("")
+        lines.append(f'<a href="{link}">Весь маршрут в Яндекс.Картах</a>')
+    await message.answer("\n".join(lines), disable_web_page_preview=True)
