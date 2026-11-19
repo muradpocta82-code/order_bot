@@ -1560,6 +1560,69 @@ class Database:
             "advance": advance,
         }
 
+    async def ledger_client_debts(self) -> list[dict[str, Any]]:
+        """Долги по книге: доставлено, но не оплачено (B3, шаг 2)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT o.chef_id, MAX(o.chef_name) AS chef_name, COUNT(*) AS n, "
+            "COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0)), 0) AS open, "
+            "MIN(o.created_at) AS since "
+            "FROM orders o WHERE o.chef_id IS NOT NULL AND o.status = 'done' "
+            "AND o.payment_status != 'paid' "
+            "GROUP BY o.chef_id HAVING COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0)), 0) > 0.01 "
+            "ORDER BY open DESC"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_credit_note(
+        self,
+        client_id: int,
+        amount: float,
+        reason: str = "",
+        order_id: int | None = None,
+    ) -> int:
+        """Кредит-нота: зачёт по претензии уменьшает долг клиента (B3)."""
+        assert self.conn is not None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self.conn.execute(
+            "INSERT INTO credit_notes(client_id, order_id, amount, reason, ts) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (
+                int(client_id),
+                int(order_id) if order_id else None,
+                round(float(amount), 2),
+                reason[:300],
+                now,
+            ),
+        )
+        note_id = int((await cursor.fetchone())["id"])
+        await self.conn.commit()
+        return note_id
+
+    async def client_book_debt(self, client_id: int) -> dict[str, float]:
+        """Долг клиента по книге: выставлено − оплачено − зачтено (B3)."""
+        totals = await self.ledger_totals()
+        billed = float(totals["billed"].get(int(client_id), 0.0))
+        paid = float(totals["paid"].get(int(client_id), 0.0))
+        credited = float(totals["credited"].get(int(client_id), 0.0))
+        return {
+            "billed": billed,
+            "paid": paid,
+            "credited": credited,
+            "open": round(billed - paid - credited, 2),
+        }
+
+    async def credit_orders_sum(self, client_id: int) -> float:
+        """Сколько всего помечено «в долг» — для /settle без суммы."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(SUM(total - COALESCE(paid_amount, 0)), 0) AS s "
+            "FROM orders WHERE chef_id = %s AND payment_status = 'credit'",
+            (int(client_id),),
+        )
+        row = await cursor.fetchone()
+        return float(row["s"] or 0) if row else 0.0
+
     async def ledger_totals(self) -> dict[str, dict[int, float]]:
         """Итоги книги по клиентам: выставлено, оплачено, зачтено (B3)."""
         assert self.conn is not None

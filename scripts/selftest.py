@@ -333,6 +333,29 @@ async def test_ledger_db() -> None:
             check("аванс 20", result2["advance"] == 20.0, str(result2["advance"]))
             totals = await db.ledger_totals()
             check("итоги книги: оплачено", totals["paid"][client] == 110.0, str(totals["paid"]))
+
+            # шаг 2: долг по книге считается только по доставленным и неоплаченным
+            debts_before = await db.ledger_client_debts()
+            check(
+                "в долгах по книге — только доставленное и неоплаченное",
+                all(float(row["open"]) > 0 for row in debts_before),
+                str(debts_before),
+            )
+            book_before = await db.client_book_debt(client)
+            check(
+                "долг по книге = выставлено − оплачено (тут аванс)",
+                book_before["open"] == -20.0,
+                str(book_before),
+            )
+            await db.add_credit_note(client, 15.0, "недовес")
+            book_after = await db.client_book_debt(client)
+            check(
+                "кредит-нота уменьшила долг",
+                book_after["open"] == -35.0 and book_after["credited"] == 15.0,
+                str(book_after),
+            )
+            credit_sum = await db.credit_orders_sum(client)
+            check("сумма «в долг» для /settle", credit_sum >= 0.0, str(credit_sum))
         finally:
             await db.close()
 

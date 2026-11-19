@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -129,22 +130,30 @@ async def cb_credit(callback: CallbackQuery, db: Database, settings: Settings) -
 async def cmd_debt(message: Message, db: Database, settings: Settings) -> None:
     if not _is_manager(settings, message.from_user.id, message.chat.id):
         return
-    rows = await db.debt_list()
+    rows = await db.ledger_client_debts()
     if not rows:
-        await message.answer("Долгов нет.")
+        await message.answer("Долгов нет: всё доставленное оплачено.")
         return
-    lines = ["📝 <b>Долги клиентов</b>", ""]
+    lines = ["📝 <b>Долги клиентов</b> <i>(по книге расчётов)</i>", ""]
     total = 0.0
     for row in rows:
-        total += float(row["s"])
+        total += float(row["open"])
         user = await db.get_user(int(row["chef_id"])) if row.get("chef_id") else None
         limit = float(user.get("credit_limit") or 0) if user else 0.0
         days = int(user.get("credit_days") or 0) if user else 0
         note = []
         if limit:
             note.append(f"лимит {money(limit)}")
-        if days:
-            debt, _n, age = await db.client_debt(int(row["chef_id"]))
+        if days and row.get("since") is not None:
+            try:
+                since = row["since"]
+                if isinstance(since, str):
+                    since = datetime.fromisoformat(since[:19])
+                if getattr(since, "tzinfo", None) is not None:
+                    since = since.replace(tzinfo=None)
+                age = (datetime.now() - since).days
+            except (TypeError, ValueError):
+                age = None
             if age is not None:
                 if age > days:
                     note.append(f"⚠️ просрочка {age - days} дн. (срок {days})")
@@ -153,7 +162,7 @@ async def cmd_debt(message: Message, db: Database, settings: Settings) -> None:
         suffix = (" · " + "; ".join(note)) if note else ""
         lines.append(
             f"• {esc(row.get('chef_name') or row['chef_id'])} — "
-            f"{money(row['s'])} ({row['n']} зак., с {str(row.get('since'))[:10]}){suffix}\n"
+            f"{money(row['open'])} ({row['n']} зак., с {str(row.get('since'))[:10]}){suffix}\n"
             f"  id: <code>{row['chef_id']}</code>"
         )
     lines.append("")
@@ -224,16 +233,84 @@ async def cmd_settle(
 ) -> None:
     if not _is_manager(settings, message.from_user.id, message.chat.id):
         return
-    raw = (command.args or "").strip()
-    if not raw.lstrip("-").isdigit():
-        await message.answer("Формат: <code>/settle 123456789</code>")
+    parts = (command.args or "").strip().split()
+    if not parts or not parts[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/settle 123456789</code> — закрыть всё по книге,\n"
+            "или <code>/settle 123456789 300</code> — принять часть суммы."
+        )
         return
-    count, amount = await db.settle_debt(int(raw))
-    if not count:
-        await message.answer("У этого клиента долгов нет.")
+    client_id = int(parts[0])
+    before = await db.client_book_debt(client_id)
+    amount: float | None = None
+    if len(parts) > 1:
+        try:
+            amount = round(float(parts[1].replace(",", ".")), 2)
+        except ValueError:
+            await message.answer("Сумма должна быть числом, например <code>300</code>.")
+            return
+    if amount is None:
+        amount = await db.credit_orders_sum(client_id)
+        if amount <= 0:
+            await message.answer("У этого клиента нет заказов «в долг».")
+            return
+    if amount <= 0:
+        await message.answer("Сумма должна быть больше нуля.")
         return
+    result = await db.add_payment(
+        client_id, amount, method="transfer", note="сверка /settle", source="settle"
+    )
+    closed = len(result["allocated"])
+    after = await db.client_book_debt(client_id)
+    lines = [f"✅ Принято {money(amount)}: закрыто заказов {closed}."]
+    if result["allocated"]:
+        lines.append(
+            "Заказы: " + ", ".join(f"№{order_id} — {money(part)}" for order_id, part in result["allocated"])
+        )
+    if result["advance"] > 0:
+        lines.append(f"💤 Аванс вперёд: {money(result['advance'])}")
+    lines.append(
+        f"Долг по книге: {money(before['open'])} → <b>{money(after['open'])}</b>"
+    )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("creditnote"))
+async def cmd_creditnote(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Кредит-нота: зачёт по претензии уменьшает долг (B3)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").strip().split(maxsplit=2)
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/creditnote ID СУММА причина</code>\n"
+            "Пример: /creditnote 123456789 25 недовес помидоров\n"
+            "Зачёт уменьшит долг клиента по книге расчётов."
+        )
+        return
+    client_id = int(parts[0])
+    try:
+        amount = round(float(parts[1].replace(",", ".")), 2)
+    except ValueError:
+        await message.answer("Сумма должна быть числом, например <code>25</code>.")
+        return
+    if amount <= 0:
+        await message.answer("Сумма должна быть больше нуля.")
+        return
+    reason = parts[2] if len(parts) > 2 else ""
+    user = await db.get_user(client_id)
+    if user is None:
+        await message.answer(f"Клиент с id {client_id} не найден.")
+        return
+    before = await db.client_book_debt(client_id)
+    await db.add_credit_note(client_id, amount, reason or "претензия")
+    after = await db.client_book_debt(client_id)
     await message.answer(
-        f"✅ Закрыто заказов: {count} на {money(amount)}. Клиент стал чистым."
+        f"📄 Кредит-нота на {money(amount)} записана"
+        + (f": {esc(reason)}" if reason else "")
+        + f".\nДолг по книге: {money(before['open'])} → <b>{money(after['open'])}</b>"
     )
 
 
