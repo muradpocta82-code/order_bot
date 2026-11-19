@@ -31,6 +31,7 @@ from .keyboards import (
 )
 from . import golden as golden_mod
 from . import margins as margins_mod
+from .clientcard import card_text
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from .roles import _is_manager, _manager_ok
@@ -738,6 +739,53 @@ async def cmd_quiet(
         f"Тихие часы: {state}.{pending}\n"
         "Поставить: /quiet 23-7 · выключить: /quiet off"
     )
+
+
+@router.message(Command("client"))
+async def cmd_client(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Карточка клиента: заказы, ритм, долг, любимые позиции, претензии (F6)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/client ID</code> — id клиента есть в карточке заказа, "
+            "в /debt и в /orders."
+        )
+        return
+    chef_id = int(raw)
+    user = await db.get_user(chef_id)
+    if user is None:
+        await message.answer(f"Клиент с id {chef_id} не найден.")
+        return
+    stats = await db.client_stats(chef_id)
+    debt_sum, debt_count, debt_age = await db.client_debt(chef_id)
+    usual = await db.usual_items(chef_id, 3)
+    note = await db.get_setting(f"client_note:{chef_id}", "") or ""
+    referrer_id = await db.get_setting(f"ref:{chef_id}", "") or ""
+    referrer = ""
+    if referrer_id:
+        ref_user = await db.get_user(int(referrer_id)) if referrer_id.lstrip("-").isdigit() else None
+        referrer = (
+            (ref_user.get("venue") or ref_user.get("name") or referrer_id)
+            if ref_user
+            else referrer_id
+        )
+    claims = await db.client_claims_count(chef_id)
+    rating = await db.client_avg_rating(chef_id)
+    text = card_text(
+        user,
+        stats,
+        {"sum": debt_sum, "count": debt_count, "age": debt_age},
+        usual,
+        note=note,
+        referrer=str(referrer),
+        claims=claims,
+        rating=rating,
+    )
+    await message.answer(text)
 
 
 @router.message(Command("webapp"))

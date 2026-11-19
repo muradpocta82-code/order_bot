@@ -1391,6 +1391,53 @@ class Database:
         )
         return [str(row["created_at"]) for row in await cursor.fetchall()]
 
+    async def client_stats(self, chef_id: int) -> dict[str, Any]:
+        """Заказы, выручка и последняя активность клиента (F6)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS s, MAX(created_at) AS last "
+            "FROM orders WHERE chef_id = %s AND status = 'done'",
+            (int(chef_id),),
+        )
+        row = await cursor.fetchone()
+        orders = int(row["n"] or 0) if row else 0
+        revenue = float(row["s"] or 0) if row else 0.0
+        last = row["last"] if row else None
+        return {
+            "orders": orders,
+            "revenue": revenue,
+            "last": str(last) if last else "",
+            "dates": await self.client_order_dates(chef_id, 20),
+        }
+
+    async def client_claims_count(self, chef_id: int) -> int:
+        """Сколько претензий было по заказам клиента."""
+        assert self.conn is not None
+        try:
+            return await self._count(
+                "SELECT COUNT(*) AS c FROM claims cl "
+                "JOIN orders o ON o.id = cl.order_id WHERE o.chef_id = %s",
+                (int(chef_id),),
+            )
+        except Exception:
+            return 0
+
+    async def client_avg_rating(self, chef_id: int) -> float | None:
+        """Средняя оценка клиента по доставленным заказам."""
+        assert self.conn is not None
+        try:
+            cursor = await self.conn.execute(
+                "SELECT AVG(rating) AS a FROM orders "
+                "WHERE chef_id = %s AND rating IS NOT NULL",
+                (int(chef_id),),
+            )
+            row = await cursor.fetchone()
+            if not row or row["a"] is None:
+                return None
+            return float(row["a"])
+        except Exception:
+            return None
+
     async def churn_candidates(self, days: int = 10) -> list[dict[str, Any]]:
         """Клиенты, которые перестали заказывать."""
         assert self.conn is not None

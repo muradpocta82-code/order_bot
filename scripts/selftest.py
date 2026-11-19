@@ -242,6 +242,69 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_client_card() -> None:
+    print("\n[карточка клиента]")
+    from orderbot.clientcard import card_text, frequency_text
+
+    check("один заказ — мало данных", "мало данных" in frequency_text(["2026-11-19 10:00"]))
+    check(
+        "раз в два дня",
+        "через день" in frequency_text(["2026-11-19 10:00", "2026-11-17 10:00"]),
+        frequency_text(["2026-11-19 10:00", "2026-11-17 10:00"]),
+    )
+    check(
+        "раз в неделю",
+        "каждые 7" in frequency_text(
+            ["2026-11-19 10:00", "2026-11-12 10:00", "2026-11-05 10:00"]
+        ),
+        frequency_text(["2026-11-19 10:00", "2026-11-12 10:00", "2026-11-05 10:00"]),
+    )
+    user = {
+        "user_id": 5,
+        "venue": "Кафе Ромашка",
+        "name": "Повар Иван",
+        "access": "approved",
+        "phone": "+998 90 000 00 00",
+        "address": "улица Навои 1",
+        "credit_days": 7,
+        "credit_limit": 200,
+    }
+    stats = {"orders": 4, "revenue": 100.0, "last": "2026-11-19 10:00", "dates": [
+        "2026-11-19 10:00", "2026-11-15 10:00", "2026-11-11 10:00",
+    ]}
+    text = card_text(
+        user,
+        stats,
+        {"sum": 30.0, "count": 2, "age": 12},
+        [{"name": "Куриное филе", "qty": 2, "unit": "кг"}],
+        note="вход со двора",
+        referrer="Кафе Люкс",
+        claims=1,
+        rating=4.5,
+    )
+    check("заведение в заголовке", "Кафе Ромашка" in text, text)
+    check("id показан", "5" in text)
+    check("выручка и средний чек", "$100" in text and "$25" in text, text)
+    check("долг с возрастом", "старейший 12 дн." in text, text)
+    check("условия отсрочки", "срок 7 дн." in text and "лимит" in text, text)
+    check("любимая позиция", "Куриное филе — 2 кг" in text, text)
+    check("претензия и оценка", "Претензий: 1" in text and "4.5 из 5" in text, text)
+    check("заметка", "вход со двора" in text, text)
+    check("кто привёл", "Кафе Люкс" in text, text)
+    check("без долга — так и пишет", "Долга нет" in card_text(
+        {**user, "credit_days": None, "credit_limit": None},
+        {"orders": 0, "revenue": 0, "last": "", "dates": []},
+        {"sum": 0, "count": 0, "age": None},
+        [],
+    ))
+    check("новичок без заказов", "не было" in card_text(
+        {"user_id": 6, "access": "pending"},
+        {"orders": 0, "revenue": 0, "last": "", "dates": []},
+        {"sum": 0, "count": 0, "age": None},
+        [],
+    ))
+
+
 def test_margin_slices() -> None:
     print("\n[маржа по срезам]")
     from orderbot.margins import collect, report_lines
@@ -1430,6 +1493,7 @@ async def main() -> int:
     test_webapp_light()
     test_week_report()
     test_margin_slices()
+    test_client_card()
     test_golden_live()
     test_module_names()
     await test_db()
