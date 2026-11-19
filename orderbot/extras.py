@@ -124,6 +124,95 @@ def tomorrow_summary(orders: list[dict[str, Any]], day_text: str) -> str:
     return "\n".join(lines)
 
 
+def week_metrics(orders: list[dict[str, Any]]) -> dict[str, float]:
+    """Цифры недели: заказы, выручка, средний чек, клиенты."""
+    active = [order for order in orders if order.get("status") != "cancelled"]
+    revenue = sum(float(order.get("total") or 0) for order in active)
+    clients = {int(order["chef_id"]) for order in active if order.get("chef_id")}
+    return {
+        "orders": float(len(active)),
+        "revenue": revenue,
+        "avg": revenue / len(active) if active else 0.0,
+        "clients": float(len(clients)),
+    }
+
+
+def _delta(current: float, previous: float) -> str:
+    """Стрелка и процент изменения (пусто, если сравнивать нечего)."""
+    if previous <= 0:
+        return "—"
+    diff = (current - previous) / previous * 100
+    arrow = "🔼" if diff > 0.5 else ("🔽" if diff < -0.5 else "➡️")
+    return f"{arrow} {diff:+.0f}%"
+
+
+def week_comparison(
+    current: dict[str, float], previous: dict[str, float]
+) -> list[str]:
+    """Строки сравнения с прошлой неделей (F5)."""
+    if previous.get("orders", 0) <= 0:
+        return ["<i>Прошлая неделя без заказов — сравнивать не с чем.</i>"]
+    money = lambda value: f"${value:,.2f}"
+    return [
+        "<b>К прошлой неделе</b>",
+        f"Выручка: {money(current['revenue'])} ({_delta(current['revenue'], previous['revenue'])})",
+        f"Заказы: {int(current['orders'])} ({_delta(current['orders'], previous['orders'])})",
+        f"Средний чек: {money(current['avg'])} ({_delta(current['avg'], previous['avg'])})",
+        f"Клиенты: {int(current['clients'])} ({_delta(current['clients'], previous['clients'])})",
+    ]
+
+
+def week_advice(
+    current: dict[str, float],
+    previous: dict[str, float],
+    failed: int = 0,
+    claims: int = 0,
+    dropped: int = 0,
+) -> list[str]:
+    """Три вывода и три действия по правилам, без ИИ (F5)."""
+    conclusions: list[str] = []
+    actions: list[str] = []
+    revenue_diff = (
+        (current["revenue"] - previous["revenue"]) / previous["revenue"] * 100
+        if previous.get("revenue", 0) > 0
+        else 0.0
+    )
+    if previous.get("revenue", 0) > 0 and revenue_diff <= -10:
+        conclusions.append(
+            f"Выручка упала на {abs(revenue_diff):.0f}% — теряем объём."
+        )
+        actions.append(
+            "Позвонить 3 клиентам, кто заказывал на прошлой неделе и молчит на этой."
+        )
+    elif revenue_diff >= 10:
+        conclusions.append(f"Выручка выросла на {revenue_diff:.0f}% — спрос есть.")
+        actions.append("Спросить выросших клиентов, что зашло, и закрепить это в прайсе.")
+    if previous.get("avg", 0) > 0 and current["avg"] < previous["avg"] * 0.9:
+        conclusions.append("Средний чек просел — берут меньше за заказ.")
+        actions.append("Предложить 2–3 клиентам добавить фасовку или сопутствующее.")
+    if failed:
+        conclusions.append(f"Недоставок за неделю: {failed}.")
+        actions.append("Разобрать причины недоставок в /ops и закрыть повторы.")
+    if claims:
+        conclusions.append(f"Претензий за неделю: {claims}.")
+        actions.append("Закрыть претензии и учесть кредит-ноты в следующем счёте.")
+    if dropped:
+        conclusions.append(f"Пропали {dropped} клиент(ов) на 2+ недели.")
+        actions.append("Отправить им мягкое напоминание из /queue или позвонить.")
+    if current["orders"] and current["clients"] and current["orders"] / current["clients"] < 1.2:
+        conclusions.append("Почти все заказы — по одному на клиента.")
+        actions.append("Напомнить клиентам про недельный заказ одной суммой.")
+    lines: list[str] = []
+    if conclusions:
+        lines.append("")
+        lines.append("<b>3 вывода</b>")
+        lines.extend(f"{index}. {text}" for index, text in enumerate(conclusions[:3], 1))
+    if actions:
+        lines.append("<b>3 действия</b>")
+        lines.extend(f"{index}. {text}" for index, text in enumerate(actions[:3], 1))
+    return lines
+
+
 def weekly_report(
     orders: list[dict[str, Any]],
     venues: dict[int, str],
@@ -131,6 +220,7 @@ def weekly_report(
     dropped: list[str],
     start_text: str,
     end_text: str,
+    extra_lines: list[str] | None = None,
 ) -> str:
     active = [o for o in orders if o.get("status") != "cancelled"]
     revenue = sum(float(o.get("total") or 0) for o in active)
@@ -165,6 +255,8 @@ def weekly_report(
             lines.append(f"• {venue}: {count} заказ(ов)")
     else:
         lines.append("• нет данных")
+    if extra_lines:
+        lines.extend(extra_lines)
     lines.append("")
     lines.append("<b>Заказывали каждую неделю</b>")
     lines.extend(f"• {name}" for name in regulars) if regulars else lines.append("• нет")

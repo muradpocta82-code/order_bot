@@ -242,6 +242,57 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_week_report() -> None:
+    print("\n[недельный отчёт: сравнение и выводы]")
+    from orderbot.extras import week_advice, week_comparison, week_metrics
+
+    good = [
+        {"status": "done", "total": 100.0, "chef_id": 1},
+        {"status": "done", "total": 50.0, "chef_id": 2},
+        {"status": "cancelled", "total": 999.0, "chef_id": 3},
+    ]
+    metrics = week_metrics(good)
+    check("отменённые не считаются", metrics["orders"] == 2, str(metrics))
+    check("выручка", metrics["revenue"] == 150.0, str(metrics["revenue"]))
+    check("средний чек", metrics["avg"] == 75.0, str(metrics["avg"]))
+    check("клиенты", metrics["clients"] == 2)
+
+    empty = week_metrics([])
+    check("пустая неделя без деления на ноль", empty["avg"] == 0.0)
+
+    growth = week_comparison({"revenue": 200.0, "orders": 4, "avg": 50.0, "clients": 3},
+                             {"revenue": 100.0, "orders": 2, "avg": 50.0, "clients": 2})
+    check("сравнение с прошлой неделей", any("К прошлой неделе" in line for line in growth), str(growth))
+    check("рост показан стрелкой", any("🔼" in line for line in growth), str(growth))
+    fall = week_comparison({"revenue": 50.0, "orders": 1, "avg": 50.0, "clients": 1},
+                           {"revenue": 200.0, "orders": 4, "avg": 50.0, "clients": 3})
+    check("падение показано стрелкой", any("🔽" in line for line in fall), str(fall))
+    check(
+        "без прошлой недели — честная пометка",
+        "не с чем" in week_comparison(metrics, week_metrics([]))[0],
+    )
+
+    advice = week_advice({"revenue": 50.0, "orders": 1, "avg": 50.0, "clients": 1},
+                         {"revenue": 200.0, "orders": 4, "avg": 80.0, "clients": 3},
+                         failed=2, claims=1, dropped=1)
+    text = "\n".join(advice)
+    check("есть выводы", "3 вывода" in text, text)
+    check("есть действия", "3 действия" in text, text)
+    check("падение выручки замечено", "упала" in text, text)
+    check("недоставки замечены", "Недоставок" in text, text)
+    conclusions = advice.index("<b>3 действия</b>") if "<b>3 действия</b>" in advice else len(advice)
+    numbered = [line for line in advice[:conclusions] if line[:2] in ("1.", "2.", "3.")]
+    check("не больше трёх выводов", len(numbered) <= 3, str(advice))
+    calm = week_advice({"revenue": 100.0, "orders": 3, "avg": 33.0, "clients": 3},
+                       {"revenue": 100.0, "orders": 3, "avg": 33.0, "clients": 3})
+    calm_text = "\n".join(calm)
+    check(
+        "без проблем — не пугаем падением и претензиями",
+        "упала" not in calm_text and "Претензий" not in calm_text and "Недоставок" not in calm_text,
+        calm_text,
+    )
+
+
 def test_webapp_light() -> None:
     print("\n[мини-апп: JSON-каталог и подпись]")
     import hashlib
@@ -1236,6 +1287,27 @@ async def test_races() -> None:
                 str(fresh.get("paid_amount")),
             )
 
+            # 4. Перенос недоставленного заказа (D7)
+            await db.transition_order(order_id, ("delivering",), "ready")
+            check("подготовлено: заказ собран", (await db.get_order(order_id))["status"] == "ready")
+            await db.mark_order_failed(order_id)
+            failed = await db.get_order(order_id)
+            check("недоставка записана", failed["status"] == "failed", str(failed["status"]))
+            moved = await db.reschedule_order(order_id, "2026-11-25")
+            check("перенос разрешён из failed", moved is True)
+            after = await db.get_order(order_id)
+            check("дата перенесена", after["delivery_date"] == "2026-11-25", str(after["delivery_date"]))
+            check("вернулся в очередь новым", after["status"] == "new", str(after["status"]))
+            check("оплата не сброшена", after["payment_status"] == "paid")
+            await db.transition_order(order_id, ("new",), "accepted")
+            await db.transition_order(order_id, ("accepted",), "ready")
+            await db.transition_order(order_id, ("ready",), "delivering")
+            await db.transition_order(order_id, ("delivering",), "done")
+            check(
+                "доставленный перенести нельзя",
+                not await db.reschedule_order(order_id, "2026-11-26"),
+            )
+
             # 4. Отмена уже доставленного заказа не проходит
             check(
                 "done нельзя отменить переходом",
@@ -1287,6 +1359,7 @@ async def main() -> int:
     test_local_money()
     test_batch_questions()
     test_webapp_light()
+    test_week_report()
     test_golden_live()
     test_module_names()
     await test_db()

@@ -1778,6 +1778,23 @@ class Database:
             order_id, ("ready", "delivering"), "failed"
         )
 
+    async def reschedule_order(
+        self, order_id: int, new_date: str, status: str = "new"
+    ) -> bool:
+        """Переносит заказ на другую дату и возвращает его в работу (D7).
+
+        Разрешено для недоставленного и для ещё не собранного заказа —
+        доставленный или отменённый трогать нельзя.
+        """
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "UPDATE orders SET delivery_date = %s, status = %s "
+            "WHERE id = %s AND status IN ('failed', 'new', 'accepted', 'ready')",
+            (str(new_date), str(status), int(order_id)),
+        )
+        await self.conn.commit()
+        return int(cursor.rowcount or 0) == 1
+
     async def mark_courier_notified(self, order_id: int) -> None:
         assert self.conn is not None
         await self.conn.execute(

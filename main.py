@@ -22,7 +22,13 @@ from orderbot.ai import AIClient
 from orderbot.catalog import Catalog
 from orderbot.config import Settings, load_settings
 from orderbot.db import Database
-from orderbot.extras import tomorrow_summary, weekly_report
+from orderbot.extras import (
+    tomorrow_summary,
+    week_advice,
+    week_comparison,
+    week_metrics,
+    weekly_report,
+)
 from orderbot.formatting import money, set_local_rate
 from orderbot.handlers import (
     _send_order_card,
@@ -753,6 +759,24 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
         for chef, seen in last_seen.items()
         if (now.replace(tzinfo=None) - seen).days >= 14
     ]
+    prev_orders = await db.orders_between(
+        (start - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"),
+        start.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    current_metrics = week_metrics(orders)
+    previous_metrics = week_metrics(prev_orders)
+    stats = await db.ops_stats(7)
+    extra: list[str] = []
+    extra.extend(week_comparison(current_metrics, previous_metrics))
+    extra.extend(
+        week_advice(
+            current_metrics,
+            previous_metrics,
+            failed=sum(int(row.get("n") or 0) for row in stats.get("failed") or []),
+            claims=sum(int(row.get("n") or 0) for row in stats.get("claims") or []),
+            dropped=len(dropped),
+        )
+    )
     text = weekly_report(
         orders,
         venues,
@@ -760,6 +784,7 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
         dropped,
         start.strftime("%d.%m"),
         end.strftime("%d.%m"),
+        extra,
     )
     await _send_quiet(bot, manager, text)
     log.info("Недельный отчёт отправлен")

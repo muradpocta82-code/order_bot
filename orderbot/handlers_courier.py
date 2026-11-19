@@ -19,6 +19,7 @@ from .config import Settings
 from .db import Database
 from .formatting import esc, format_order, money
 from .keyboards import (
+    failed_move_keyboard,
     client_order_keyboard,
     courier_back_keyboard,
     courier_panel_keyboard,
@@ -297,6 +298,72 @@ async def cb_courier_fail(
     return
 
 
+def _move_dates() -> list[tuple[str, str]]:
+    """Три ближайших дня для переноса: завтра, послезавтра, через два дня."""
+    from datetime import datetime, timedelta
+
+    today = datetime.now().date()
+    labels = ("завтра", "послезавтра", "+2 дня")
+    return [
+        (label, (today + timedelta(days=offset)).isoformat())
+        for offset, label in zip((1, 2, 3), labels)
+    ]
+
+
+@router.callback_query(F.data.startswith("move:"))
+async def cb_move_order(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Перенос недоставленного заказа на другую дату (D7)."""
+    try:
+        _, raw_order, new_date = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    manager = _manager_chat(settings)
+    allowed = callback.from_user.id == (settings.courier_chat_id or 0) or (
+        manager is not None and callback.from_user.id == manager
+    )
+    if not allowed:
+        await callback.answer("Переносить может курьер или менеджер", show_alert=True)
+        return
+    if not await db.reschedule_order(order_id, new_date):
+        await callback.answer("Заказ уже закрыт — перенести нельзя", show_alert=True)
+        return
+    await db.log_event(
+        order_id,
+        "rescheduled",
+        {"date": new_date, "was": order.get("delivery_date"), "status": order.get("status")},
+        actor_id=callback.from_user.id,
+    )
+    fresh = await db.get_order(order_id)
+    pretty = new_date[8:10] + "." + new_date[5:7]
+    if fresh is not None:
+        await _edit_courier_card(callback, fresh, f"📅 Перенесён на {pretty}", None)
+    await callback.answer(f"Перенесён на {pretty}")
+    if manager:
+        try:
+            await callback.bot.send_message(
+                manager,
+                f"📅 Заказ №{order_id} перенесён на {pretty} и вернулся в очередь.",
+            )
+        except Exception:
+            log.debug("Не удалось уведомить менеджера о переносе №%s", order_id)
+    if fresh is not None and fresh.get("chef_id"):
+        try:
+            await callback.bot.send_message(
+                int(fresh["chef_id"]),
+                f"📅 Заказ №{order_id} перенесён на {pretty}.",
+            )
+        except Exception:
+            log.debug("Не удалось уведомить клиента о переносе №%s", order_id)
+
+
 @router.callback_query(F.data.startswith("failr:"))
 async def cb_courier_fail_reason(
     callback: CallbackQuery, db: Database, settings: Settings
@@ -322,7 +389,13 @@ async def cb_courier_fail_reason(
     )
     order = await db.get_order(order_id)
     assert order is not None
-    await _edit_courier_card(callback, order, f"⚠️ Не доставлено: {reason_label(code)}", None)
+    await _edit_courier_card(
+        callback,
+        order,
+        f"⚠️ Не доставлено: {reason_label(code)}\n"
+        "<i>Можно сразу перенести на другой день.</i>",
+        failed_move_keyboard(order_id, _move_dates()),
+    )
     manager = _manager_chat(settings)
     await _drop_card_buttons(
         callback.bot, manager, order.get("manager_card_message_id")
@@ -332,6 +405,7 @@ async def cb_courier_fail_reason(
             await callback.bot.send_message(
                 manager,
                 f"⚠️ Заказ №{order_id} не доставлен. Причина: {reason_label(code)}.",
+                reply_markup=failed_move_keyboard(order_id, _move_dates()),
             )
         except Exception:
             log.debug("Не удалось уведомить упаковщика о сбое №%s", order_id)
