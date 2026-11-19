@@ -2876,11 +2876,22 @@ async def cmd_rate(
         return
     raw = (command.args or "").replace(",", ".").strip()
     if not raw:
-        current = await db.get_setting("usd_rate", "0")
-        await message.answer(
-            f"Текущий курс: <b>{current}</b> {LOCAL_CURRENCY} за 1 USD.\n"
-            "Изменить: <code>/rate 3.5</code>, выключить: <code>/rate 0</code>."
-        )
+        current = await db.usd_rate()
+        lines = [
+            f"Курс: <b>{current:g}</b> {LOCAL_CURRENCY} за 1 USD."
+            if current > 0
+            else "Курс не задан: суммы в сумах не показываются.",
+            f"Изменить: <code>/rate 12650</code>, выключить: <code>/rate 0</code>.",
+            "Курс заказа фиксируется при подтверждении — старые суммы не меняются.",
+        ]
+        history = await db.rate_history(5)
+        if history:
+            lines.append("")
+            lines.append("<b>Последние смены</b>")
+            for row in history:
+                stamp = str(row.get("ts"))[:16]
+                lines.append(f"• {stamp} — {float(row.get('rate') or 0):g}")
+        await message.answer("\n".join(lines))
         return
     try:
         rate = float(raw)
@@ -2890,7 +2901,7 @@ async def cmd_rate(
     if rate < 0 or rate > 100000:
         await message.answer("Курс вне разумных пределов.")
         return
-    await db.set_setting("usd_rate", str(rate))
+    await db.set_usd_rate(rate)
     set_local_rate(rate, LOCAL_CURRENCY)
     await message.answer(
         "Курс выключен." if rate <= 0 else f"Курс обновлён: 1 USD = {rate} {LOCAL_CURRENCY}."

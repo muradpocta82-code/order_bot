@@ -567,6 +567,47 @@ class Database:
         return len(rows)
 
     # ------------------------------------------------------------------
+    # курс доллара
+    # ------------------------------------------------------------------
+    async def usd_rate(self) -> float:
+        """Текущий курс из настроек (0 — не показывать суммы в сумах)."""
+        raw = await self.get_setting("usd_rate", "0")
+        try:
+            return max(0.0, float(raw or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def set_usd_rate(self, rate: float, source: str = "manager") -> None:
+        """Ставит курс и пишет его в историю (для отчёта по прошлым периодам)."""
+        await self.set_setting("usd_rate", str(rate))
+        assert self.conn is not None
+        try:
+            await self.conn.execute(
+                "INSERT INTO rate_history(rate, source, ts) VALUES(%s, %s, %s)",
+                (
+                    round(float(rate), 4),
+                    source,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            await self.conn.commit()
+        except Exception:
+            log.warning("Не удалось записать курс в историю", exc_info=True)
+
+    async def rate_history(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Последние смены курса, свежие сверху."""
+        assert self.conn is not None
+        try:
+            cursor = await self.conn.execute(
+                "SELECT ts, rate, source FROM rate_history ORDER BY ts DESC, id DESC "
+                "LIMIT %s",
+                (int(limit),),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
     # заказы
     # ------------------------------------------------------------------
     async def create_order(
@@ -637,6 +678,21 @@ class Database:
                 )
                 if claimed.rowcount != 1:
                     raise RuntimeError("Черновик уже обработан другим запросом")
+            # Слепок курса: смена курса не меняет суммы уже подтверждённого заказа.
+            if self.is_postgres:
+                rate = await self.usd_rate()
+                if rate > 0:
+                    try:
+                        await self.conn.execute(
+                            "UPDATE orders SET usd_rate_at_order = %s, total_local = %s "
+                            "WHERE id = %s",
+                            (round(rate, 4), round(total * rate, 2), order_id),
+                        )
+                    except Exception:
+                        log.warning(
+                            "Не удалось сохранить курс в заказе %s", order_id,
+                            exc_info=True,
+                        )
             return order_id
 
     async def replace_order_items(

@@ -20,7 +20,7 @@ STATUS_LABELS = {
 }
 
 LOCAL_RATE = 0.0
-LOCAL_CURRENCY = "TMT"
+LOCAL_CURRENCY = "сум"
 
 
 def set_local_rate(rate: float, currency: str = "TMT") -> None:
@@ -28,6 +28,23 @@ def set_local_rate(rate: float, currency: str = "TMT") -> None:
     global LOCAL_RATE, LOCAL_CURRENCY
     LOCAL_RATE = max(0.0, float(rate or 0))
     LOCAL_CURRENCY = (currency or "TMT").strip() or "TMT"
+
+
+def order_local_money(order: dict[str, Any]) -> str:
+    """Сумма в местной валюте по курсу самого заказа (старые заказы не «плывут»)."""
+    try:
+        rate = float(order.get("usd_rate_at_order") or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    if rate <= 0:
+        rate = LOCAL_RATE
+    if rate <= 0:
+        return ""
+    total = float(order.get("total") or 0)
+    if not total:
+        return ""
+    amount = round(total * rate)
+    return f"≈ {amount:,}".replace(",", " ") + f" {LOCAL_CURRENCY}"
 
 
 def local_money(value: float | None) -> str:
@@ -271,8 +288,9 @@ def format_client_order(order: dict[str, Any], title: str = "✅ Заказ") ->
     if order.get("delivery_pin"):
         lines.append(f"🔑 Код получения: <b>{esc(order['delivery_pin'])}</b>")
     lines.append(f"💳 Оплата: {payment_line(order)}")
-    if LOCAL_RATE > 0:
-        lines.append(f"💱 Примерно: {local_money(order.get('total'))}")
+    order_local = order_local_money(order)
+    if order_local:
+        lines.append(f"💱 {order_local}")
     return "\n".join(lines)
 
 

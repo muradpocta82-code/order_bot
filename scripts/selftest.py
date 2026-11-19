@@ -242,6 +242,40 @@ def test_slots() -> None:
     check("подсказка слота вечером", default_time(parse_slots(None), _dt(2026, 11, 14, 19, 0)) == "09:00")
 
 
+def test_local_money() -> None:
+    print("\n[суммы в сумах по курсу заказа]")
+    from orderbot.formatting import (
+        LOCAL_CURRENCY,
+        order_local_money,
+        set_local_rate,
+    )
+
+    order = {"total": 10.5, "usd_rate_at_order": 12650}
+    text = order_local_money(order)
+    check("сумма по курсу заказа", "132 825" in text, text)
+    check("валюта в подписи", LOCAL_CURRENCY in text, text)
+    old = {"total": 10.5, "usd_rate_at_order": 12000}
+    set_local_rate(13000)
+    try:
+        check(
+            "старый заказ не пересчитывается по новому курсу",
+            "126 000" in order_local_money(old),
+            order_local_money(old),
+        )
+        check(
+            "без курса в заказе — текущий курс",
+            "136 500" in order_local_money({"total": 10.5}),
+            order_local_money({"total": 10.5}),
+        )
+    finally:
+        set_local_rate(0)
+    check("курс не задан — пусто", order_local_money({"total": 10.5}) == "")
+    check(
+        "нулевая сумма — не показываем",
+        order_local_money({"total": 0, "usd_rate_at_order": 12650}) == "",
+    )
+
+
 def test_sanity_checks() -> None:
     print("\n[проверки опечаток]")
     from orderbot.sanity import is_duplicate, suspicious_items
@@ -968,6 +1002,7 @@ async def main() -> int:
     test_slots()
     test_quiet_hours()
     test_sanity_checks()
+    test_local_money()
     test_module_names()
     await test_db()
     await test_start_and_greeting()
