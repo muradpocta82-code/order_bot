@@ -1410,6 +1410,43 @@ def test_habit() -> None:
     check("без позиций текст проще", "Обычно берёте" not in habit.nudge_text(3))
 
 
+def test_churn_rhythm() -> None:
+    print("\n[личный ритм клиента: когда напоминать]")
+    from datetime import date as _date
+
+    from orderbot import churn
+
+    weekly = ["2026-09-02", "2026-09-09", "2026-09-16", "2026-09-23", "2026-09-30"]
+    check("медианный интервал 7 дней", churn.median_interval(weekly) == 7.0, str(churn.median_interval(weekly)))
+    check("два заказа — ритма нет", churn.median_interval(["2026-09-02", "2026-09-09"]) is None)
+    check("повтор в один день не считается", len(churn.order_dates(["2026-09-02", "2026-09-02"])) == 1)
+    check("битые даты пропускаются", churn.order_dates(["мусор"]) == [])
+
+    irregular = ["2026-09-01", "2026-09-03", "2026-09-15", "2026-09-16", "2026-10-01"]
+    silent, days, interval = churn.is_silent(irregular, _date(2026, 10, 20))
+    check("молчание распознано", silent, f"{silent} {days} {interval}")
+    check("дней молчания", days == 19, str(days))
+    check("интервал посчитан", interval is not None and interval > 0, str(interval))
+
+    fresh, days_fresh, _interval = churn.is_silent(weekly, _date(2026, 10, 2))
+    check("свежий заказ — не молчит", not fresh, f"{days_fresh}")
+    early, _days_early, _i = churn.is_silent(weekly, _date(2026, 10, 3))
+    check("два дня — не напоминаем", not early)
+    check("нет истории — не молчит", churn.is_silent([], _date(2026, 10, 3))[0] is False)
+
+    rows = [
+        {"name": "Кафе Роза", "silent_days": 19, "interval": 4.0},
+        {"name": "Столовая", "silent_days": 9, "interval": None},
+    ]
+    text = churn.alert_text(rows)
+    check("в сводке имя", "Кафе Роза" in text, text)
+    check("в сводке ритм", "обычно каждые" in text, text)
+    check("в сводке кнопка-подсказка", "Напомнить" in text, text)
+    check("пустая сводка", "некому" in churn.alert_text([]))
+    check("текст клиенту про ритм", "раз в 4 дн" in churn.client_text(4.0), churn.client_text(4.0))
+    check("текст клиенту без ритма", "давно не заказывали" in churn.client_text(None))
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -2184,6 +2221,7 @@ async def main() -> int:
     test_income()
     test_missing_demand()
     test_habit()
+    test_churn_rhythm()
     test_golden_live()
     test_module_names()
     await test_db()

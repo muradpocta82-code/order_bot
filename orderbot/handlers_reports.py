@@ -852,6 +852,61 @@ async def cmd_costvoice(
     await _costs_from_text(message, status, db, settings, catalog, raw)
 
 
+@router.callback_query(F.data.startswith("chase:"))
+async def cb_chase_client(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Мягкое напоминание клиенту, который выпал из ритма (C10)."""
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        chef_id = int(callback.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from orderbot.churn import client_text, median_interval
+    from orderbot.keyboards import reminder_keyboard
+
+    today = _dt.now(settings.timezone).date()
+    last_chase = await db.get_setting(f"chase_sent:{chef_id}", "")
+    if last_chase:
+        try:
+            if (today - _date.fromisoformat(str(last_chase)[:10])).days < 1:
+                await callback.answer("Сегодня уже напоминали", show_alert=True)
+                return
+        except ValueError:
+            pass
+    days: list[str] = []
+    for row in await db.client_order_days(180):
+        if row.get("chef_id") is not None and int(row["chef_id"]) == chef_id:
+            days.append(str(row.get("day"))[:10])
+    interval = median_interval(days)
+    try:
+        await callback.bot.send_message(
+            chef_id, client_text(interval), reply_markup=reminder_keyboard(chef_id)
+        )
+    except Exception as exc:
+        log.info("Не дошло напоминание клиенту %s: %s", chef_id, exc)
+        await callback.answer("Клиент не отвечает боту", show_alert=True)
+        return
+    await db.set_setting(f"chase_sent:{chef_id}", today.isoformat())
+    await callback.answer("Напоминание отправлено")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    if interval:
+        await callback.message.answer(
+            f"📨 Напомнил «каждые {interval:.0f} дн.». Ждём заказ — ответит, придёт черновик."
+        )
+    else:
+        await callback.message.answer("📨 Напомнил клиенту.")
+
+
 @router.callback_query(F.data.startswith("costok:"))
 async def cb_cost_ok(
     callback: CallbackQuery, db: Database, settings: Settings

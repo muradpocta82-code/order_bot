@@ -17,7 +17,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent, FSInputFile
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    ErrorEvent,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from orderbot.ai import AIClient
 from orderbot.catalog import Catalog
 from orderbot.config import Settings, load_settings
@@ -45,6 +52,7 @@ from orderbot.keyboards import (
 )
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
+from orderbot.churn import alert_text as churn_alert_text
 from orderbot.habit import nudge_text as habit_nudge_text, should_nudge
 from orderbot.missing import digest_text as missing_digest_text
 from orderbot.stock import (
@@ -256,29 +264,79 @@ def _ping(url: str) -> None:
 
 
 async def _churn_loop(bot: Bot, db: Database, settings: Settings) -> None:
-    """Раз в сутки ищет клиентов, которые перестали заказывать."""
+    """Раз в сутки: кто выпал из своего ритма заказов (C10)."""
     manager = settings.manager_chat_id
     if manager is None:
         return
     while True:
         await asyncio.sleep(6 * 3600)
         try:
-            today = datetime.now(settings.timezone).date().isoformat()
+            now = datetime.now(settings.timezone)
+            today = now.date().isoformat()
             if await db.get_setting("churn_alert_day") == today:
                 continue
-            rows = await db.churn_candidates(10)
+            rows = await _silent_clients(db, today)
             if not rows:
                 continue
             await db.set_setting("churn_alert_day", today)
-            lines = ["💤 <b>Перестали заказывать (10+ дней)</b>", ""]
-            for row in rows[:10]:
-                lines.append(
-                    f"• {row.get('chef_name') or row['chef_id']} — "
-                    f"последний заказ {str(row.get('last'))[:10]}"
-                )
-            await bot.send_message(int(manager), "\n".join(lines))
+            buttons = [
+                [
+                    InlineKeyboardButton(
+                        text=f"📨 Напомнить {str(row['name'])[:20]}",
+                        callback_data=f"chase:{row['chef_id']}",
+                    )
+                ]
+                for row in rows[:6]
+            ]
+            await bot.send_message(
+                int(manager),
+                churn_alert_text(rows),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            )
+            log.info("Алерт по оттоку: %s клиентов", len(rows))
         except Exception:
             log.exception("Ошибка проверки оттока")
+
+
+async def _silent_clients(db: Database, today: str) -> list[dict]:
+    """Клиенты, которые молчат дольше собственного ритма заказов."""
+    from orderbot.churn import is_silent
+
+    rows = await db.client_order_days(180)
+    grouped: dict[int, dict] = {}
+    for row in rows:
+        chef_id = row.get("chef_id")
+        if chef_id is None:
+            continue
+        entry = grouped.setdefault(
+            int(chef_id), {"chef_id": int(chef_id), "name": row.get("chef_name"), "days": []}
+        )
+        entry["days"].append(str(row.get("day"))[:10])
+    day = datetime.fromisoformat(str(today)[:10]).date()
+    result: list[dict] = []
+    for chef_id, entry in grouped.items():
+        silent, silent_days, interval = is_silent(entry["days"], day)
+        if not silent:
+            continue
+        last_chase = await db.get_setting(f"chase_sent:{chef_id}", "")
+        if last_chase:
+            try:
+                if (
+                    day - datetime.fromisoformat(str(last_chase)[:10]).date()
+                ).days < 7:
+                    continue
+            except ValueError:
+                pass
+        result.append(
+            {
+                "chef_id": chef_id,
+                "name": entry["name"] or chef_id,
+                "silent_days": silent_days,
+                "interval": interval,
+            }
+        )
+    result.sort(key=lambda row: -int(row["silent_days"]))
+    return result
 
 
 async def _heartbeat_loop(settings: Settings) -> None:
