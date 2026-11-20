@@ -1204,7 +1204,75 @@ async def test_stock_db() -> None:
         check("порог из настроек", await st.threshold(db) == 7.0)
         await db.set_setting(st.WARN_KEY, "мусор")
         check("битый порог — по умолчанию", await st.threshold(db) == st.DEFAULT_WARN)
+
+        before = float(item.stock or 0)
+        arrival_id = await db.add_arrival(item.id, item.name, 5.0, item.unit, 1.25, 1)
+        check("приход записан", arrival_id > 0, str(arrival_id))
+        await db.set_cost(item.id, 1.25, source="income")
+        left = await db.adjust_stock(item.id, 5.0, base=before)
+        check("остаток пополнен", abs(left - 5.0) < 0.001, str(left))
+        rows_in = await db.arrival_rows(30)
+        check("приход в истории", any(int(row["id"]) == arrival_id for row in rows_in), str(len(rows_in)))
+        row_in = next(row for row in rows_in if int(row["id"]) == arrival_id)
+        check("в истории количество", abs(float(row_in["qty"]) - 5.0) < 0.001, str(row_in["qty"]))
+        costs = await db.costs_map()
+        check("закупка записана приходом", abs(float(costs.get(item.id) or 0) - 1.25) < 0.001, str(costs.get(item.id)))
         await db.close()
+
+
+def test_income() -> None:
+    print("\n[приход товара: разбор и остатки]")
+    from orderbot import arrivals as av
+
+    parsed = av.parse("помидоры 120 кг по 1.10, огурцы 80 кг по 0.90")
+    check("две строки разобраны", len(parsed) == 2, str(parsed))
+    check("количество", parsed[0].qty == 120.0, str(parsed[0]))
+    check("единица", parsed[0].unit == "кг", str(parsed[0]))
+    check("цена закупки", abs(float(parsed[0].cost or 0) - 1.10) < 0.001, str(parsed[0]))
+    check("вторая строка", parsed[1].phrase == "огурцы" and abs(float(parsed[1].cost or 0) - 0.90) < 0.001, str(parsed[1]))
+
+    comma = av.parse("сыр 5 кг 12,50")[0]
+    check("запятая в цене", comma.qty == 5.0 and abs(float(comma.cost or 0) - 12.5) < 0.001, str(comma))
+    only_qty = av.parse("куриное филе 20 кг")[0]
+    check("количество без цены", only_qty.qty == 20.0 and only_qty.cost is None, str(only_qty))
+    only_cost = av.parse("бекон 12")[0]
+    check("только цена без единицы", only_cost.cost == 12.0 and only_cost.qty is None, str(only_cost))
+    prefixed = av.parse("приход: моцарелла 30 уп по 18")[0]
+    check("слово «приход» не мешает", prefixed.phrase == "моцарелла", str(prefixed))
+    check("мусор отброшен", av.parse("непонятно что") == [])
+    check("пустая строка", av.parse("") == [])
+    check("ноль не принимаем", av.parse("помидоры 0 кг по 1.10") == [])
+
+    matched = av.match(parsed, CATALOG)
+    check("позиция найдена", all(line.ok for line in matched), str(matched))
+    tomatoes = matched[0]
+    check(
+        "единица совпала со складом",
+        tomatoes.unit_matches and tomatoes.adds_stock,
+        f"{tomatoes.unit} vs {tomatoes.stock_unit}",
+    )
+    wrong_unit = av.ArrivalLine(
+        phrase="помидоры", qty=3.0, unit="ящик", cost=1.0,
+        catalog_id=tomatoes.catalog_id, name=tomatoes.name,
+        stock_unit=tomatoes.stock_unit,
+    )
+    check("другая единица остаток не трогает", not wrong_unit.adds_stock)
+
+    no_cost = av.ArrivalLine(
+        phrase="помидоры", qty=3.0, unit="кг", cost=None,
+        catalog_id=tomatoes.catalog_id, name=tomatoes.name,
+        stock_unit=tomatoes.stock_unit,
+    )
+    text = av.describe([no_cost, av.ArrivalLine(phrase="невидаль", qty=None, unit="", cost=None)])
+    check("описание перечисляет позицию", "Томаты" in text or "помидоры" in text.lower(), text)
+    check("описание честно про ненайденное", "Не нашёл" in text, text)
+    check("без цены так и пишет", "без цены" in text, text)
+    stocks, others = av.totals([no_cost, av.ArrivalLine(phrase="x", qty=None, unit="", cost=1.0)])
+    check("итог: с остатком и без", (stocks, others) == (1, 1), f"{stocks} {others}")
+    check("подсказка по формату", "/income" in av.sample_text())
+
+    left = av.parse("помидоры 3 кг по 1.10, помидоры 2 кг по 1.20")
+    check("повторы не склеиваются", len(left) == 2, str(left))
 
 
 async def test_db() -> None:
@@ -1978,6 +2046,7 @@ async def main() -> int:
     test_writeoff()
     test_price_review()
     test_stock()
+    test_income()
     test_golden_live()
     test_module_names()
     await test_db()

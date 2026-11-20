@@ -16,6 +16,7 @@ from .catalog import Catalog
 from .config import Settings
 from .db import Database
 from .formatting import esc, format_missing, format_quality, money
+from . import arrivals
 from .stock import (
     WARN_KEY,
     current as current_stock,
@@ -200,6 +201,102 @@ async def cmd_lowstock(
     limit = await threshold(db)
     rows = low_stock(await current_stock(catalog, db), limit)
     await message.answer(low_stock_text(rows, limit))
+
+
+@router.message(Command("income", "приход"))
+async def cmd_income(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Приход товара: остатки + закупка одной строкой (G7)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(
+            arrivals.sample_text() + "\n\nИстория приходов: /arrivals [дней]"
+        )
+        return
+    lines = arrivals.match(arrivals.parse(raw), catalog)
+    if not lines:
+        await message.answer("Не разобрал строку.\n\n" + arrivals.sample_text())
+        return
+    stock_rows = await current_stock(catalog, db)
+    notes: list[str] = []
+    stocks_done = 0
+    costs_done = 0
+    for line in lines:
+        item = catalog.get(line.catalog_id)
+        if item is None:
+            continue
+        if line.cost:
+            await db.set_cost(item.id, line.cost, source="income")
+            costs_done += 1
+        if line.qty is not None:
+            if line.unit_matches:
+                left = await db.adjust_stock(item.id, line.qty, base=item.stock)
+                stocks_done += 1
+                row = stock_rows.get(item.id)
+                was = float(row.left) if row and row.left is not None else None
+                notes.append(
+                    f"📦 {esc(item.name)}: "
+                    + (f"{was:g} → {left:g} {esc(item.unit)}" if was is not None else f"{left:g} {esc(item.unit)}")
+                )
+            else:
+                notes.append(
+                    f"⚠️ {esc(item.name)}: единица «{esc(line.unit)}» ≠ "
+                    f"«{esc(item.unit)}» — остаток не менял"
+                )
+        await db.add_arrival(
+            item.id,
+            item.name,
+            line.qty,
+            line.unit or item.unit,
+            line.cost,
+            message.from_user.id,
+        )
+    text = arrivals.describe(lines)
+    found = sum(1 for line in lines if line.ok)
+    text += (
+        f"\n\n✅ Записал: {found} поз."
+        f" Остатки пополнены: {stocks_done}, цены закупки: {costs_done}."
+    )
+    if notes:
+        text += "\n" + "\n".join(notes[:10])
+    text += "\n\nНовые цены от закупки: /pricenew · история: /arrivals"
+    await message.answer(text)
+
+
+@router.message(Command("arrivals"))
+async def cmd_arrivals(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """История приходов за период."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    days = max(1, min(365, int(raw))) if raw.isdigit() else 30
+    rows = await db.arrival_rows(days)
+    if not rows:
+        await message.answer(f"Приходов за {days} дней нет. Записать: /income помидоры 120 кг по 1.10")
+        return
+    lines = [f"🚚 <b>Приходы за {days} дней</b>", ""]
+    for row in rows[:20]:
+        qty = row.get("qty")
+        cost = row.get("cost")
+        when = str(row.get("ts") or "")[:16].replace("T", " ")
+        line = f"• {when} — {esc(row.get('name') or 'позиция')}"
+        if qty is not None:
+            line += f" {float(qty):g} {esc(row.get('unit') or '')}"
+        if cost is not None:
+            line += f" по {money(float(cost))}"
+        lines.append(line)
+    if len(rows) > 20:
+        lines.append(f"…и ещё {len(rows) - 20}")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("losses"))

@@ -1112,6 +1112,7 @@ async def run() -> int:
                         BotCommand(command="price", description="Прайс"),
                         BotCommand(command="missing", description="Нет в прайсе"),
                         BotCommand(command="lowstock", description="Заканчивается"),
+                        BotCommand(command="income", description="Приход товара"),
                         BotCommand(command="quality", description="Качество разбора"),
                         BotCommand(command="health", description="Здоровье"),
                         BotCommand(command="today", description="Сводка дня"),

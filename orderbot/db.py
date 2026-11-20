@@ -2406,6 +2406,43 @@ class Database:
         )
         await self.conn.commit()
 
+    async def add_arrival(
+        self,
+        catalog_id: int | None,
+        name: str,
+        qty: float | None,
+        unit: str,
+        cost: float | None,
+        actor_id: int = 0,
+    ) -> int:
+        """Записывает приход товара (G7): остаток и закупка уже применены."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "INSERT INTO arrivals(catalog_id, name, qty, unit, cost, actor_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                int(catalog_id) if catalog_id else None,
+                name[:200],
+                round(float(qty), 3) if qty is not None else None,
+                (unit or "")[:20],
+                round(float(cost), 4) if cost is not None else None,
+                int(actor_id or 0),
+            ),
+        )
+        row = await cursor.fetchone()
+        await self.conn.commit()
+        return int(row["id"]) if row else 0
+
+    async def arrival_rows(self, days: int = 30) -> list[dict[str, Any]]:
+        """Приходы за период, свежие сверху."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, catalog_id, name, qty, unit, cost, ts FROM arrivals "
+            "WHERE ts >= now() - (%s || ' days')::interval ORDER BY ts DESC, id DESC",
+            (int(days),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def adjust_stock(
         self, catalog_id: int, delta: float, base: float | None = None
     ) -> float:
