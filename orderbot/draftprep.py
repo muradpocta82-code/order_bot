@@ -11,10 +11,26 @@ from .catalog import Catalog
 from .config import Settings
 from .db import Database
 from .units import canon_unit, format_qty, pack_size, plural, price_per_unit
+from .subreplace import (
+    MODE_ASK,
+    MODE_NO,
+    SubRule,
+    pick as substitute_pick,
+)
 
 async def _apply_stock(draft: dict, db: Database, catalog: Catalog) -> bool:
     """Помечает позиции без остатка; True — есть что уточнять."""
     overrides = await db.stock_overrides()
+    raw_rules = await db.sub_rules()
+    rules = {
+        int(catalog_id): SubRule(
+            mode=str(row.get("mode") or MODE_ASK),
+            substitute_id=(
+                int(row["substitute_id"]) if row.get("substitute_id") else None
+            ),
+        )
+        for catalog_id, row in raw_rules.items()
+    }
     blocked = False
     for item in draft.get("items", []):
         catalog_id = item.get("catalog_id")
@@ -32,13 +48,19 @@ async def _apply_stock(draft: dict, db: Database, catalog: Catalog) -> bool:
             left = float(catalog_item.stock)
         if not available:
             item["status"] = "unavailable"
-            subs = catalog.substitutes(catalog_item) if catalog_item else []
+            subs = (
+                substitute_pick(catalog, catalog_item, rules.get(int(catalog_id)))
+                if catalog_item
+                else []
+            )
             item["substitutes"] = [sub.id for sub in subs]
             note = "нет в наличии"
             if subs:
                 note += "; можно заменить: " + ", ".join(
                     sub.name for sub in subs[:2]
                 )
+            elif rules.get(int(catalog_id), SubRule()).mode == MODE_NO:
+                note += " (замена не предусмотрена)"
             item["stock_note"] = note
             blocked = True
             continue

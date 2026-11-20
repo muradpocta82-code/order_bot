@@ -1259,6 +1259,15 @@ async def test_stock_db() -> None:
         check("выключено — не списывает", consumed_off == 0)
         await db.set_setting(st.SALES_KEY, "1")
 
+        await db.set_sub_rule(2, "no")
+        rules = await db.sub_rules()
+        check("правило замены записано", rules.get(2, {}).get("mode") == "no", str(rules))
+        await db.set_sub_rule(2, "only", 3)
+        rules = await db.sub_rules()
+        check("правило обновилось", rules[2] == {"mode": "only", "substitute_id": 3}, str(rules))
+        await db.clear_sub_rule(2)
+        check("правило снято", 2 not in await db.sub_rules())
+
         await db.set_payer(987654321, 123456789)
         check("плательщик записан", await db.payers_for(123456789) == [987654321])
         rows_payers = await db.payer_rows()
@@ -1532,6 +1541,43 @@ def test_payer_role() -> None:
     check("текст долга с суммой", "$120.50" in debt, debt)
     check("текст долга со сроком", "21 дней" in debt, debt)
     check("текст снятия роли", "снята" in payer.removed_text())
+
+
+def test_substitute_rules() -> None:
+    print("\n[правила замены: спросить, не заменять, конкретная замена]")
+    from orderbot import subreplace as sr
+
+    check("правило «нет»", sr.parse_rule("нет") == sr.SubRule(sr.MODE_NO))
+    check("правило «спросить»", sr.parse_rule("Спросить") == sr.SubRule(sr.MODE_ASK))
+    check("правило по id", sr.parse_rule("1250") == sr.SubRule(sr.MODE_ONLY, 1250))
+    check("мусор — None", sr.parse_rule("как-нибудь") is None)
+    check("пусто — None", sr.parse_rule("") is None)
+
+    item = next(
+        i for i in CATALOG.items
+        if i.category and len([o for o in CATALOG.items if o.category == i.category]) > 1
+    )
+    auto = sr.pick(CATALOG, item, None)
+    check("по умолчанию похожие", len(auto) >= 1, str(auto))
+    check("«не заменять» — пусто", sr.pick(CATALOG, item, sr.SubRule(sr.MODE_NO)) == [])
+    other = next(o for o in CATALOG.items if o.id != item.id)
+    only = sr.pick(CATALOG, item, sr.SubRule(sr.MODE_ONLY, other.id))
+    check("конкретная замена", [o.id for o in only] == [other.id], str(only))
+    same = sr.pick(CATALOG, item, sr.SubRule(sr.MODE_ONLY, item.id))
+    check("замена сама собой не берётся", same == [])
+    ghost = sr.pick(CATALOG, item, sr.SubRule(sr.MODE_ONLY, 999999))
+    check("несуществующая замена", ghost == [])
+
+    text = sr.rules_text(CATALOG, {})
+    check("текст без правил", "Правил замены нет" in text, text)
+    listed = sr.rules_text(
+        CATALOG,
+        {item.id: {"mode": sr.MODE_NO, "substitute_id": None},
+         other.id: {"mode": sr.MODE_ONLY, "substitute_id": item.id}},
+    )
+    check("в списке позиция", item.name in listed, listed)
+    check("в списке «не заменять»", "не заменять" in listed, listed)
+    check("в списке замена", item.name in listed and "заменять на" in listed, listed)
 
 
 async def test_db() -> None:
@@ -2312,6 +2358,7 @@ async def main() -> int:
     test_manager_reply()
     test_staff_ratings()
     test_payer_role()
+    test_substitute_rules()
     test_golden_live()
     test_module_names()
     await test_db()

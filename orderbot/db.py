@@ -1919,6 +1919,41 @@ class Database:
             "diff": diff,
         }
 
+    async def set_sub_rule(
+        self, catalog_id: int, mode: str, substitute_id: int | None = None
+    ) -> None:
+        """Правило замены позиции (C8): ask / no / only."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO substitute_rules(catalog_id, mode, substitute_id, updated_at) "
+            "VALUES (%s, %s, %s, now()) "
+            "ON CONFLICT(catalog_id) DO UPDATE SET mode = excluded.mode, "
+            "substitute_id = excluded.substitute_id, updated_at = excluded.updated_at",
+            (int(catalog_id), str(mode)[:10], substitute_id),
+        )
+        await self.conn.commit()
+
+    async def clear_sub_rule(self, catalog_id: int) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "DELETE FROM substitute_rules WHERE catalog_id = %s", (int(catalog_id),)
+        )
+        await self.conn.commit()
+
+    async def sub_rules(self) -> dict[int, dict[str, Any]]:
+        """Все правила замены: catalog_id → {mode, substitute_id}."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT catalog_id, mode, substitute_id FROM substitute_rules"
+        )
+        return {
+            int(row["catalog_id"]): {
+                "mode": row["mode"],
+                "substitute_id": row["substitute_id"],
+            }
+            for row in await cursor.fetchall()
+        }
+
     async def set_payer(self, user_id: int, venue_id: int, role: str = "payer") -> None:
         """Плательщик точки: получает накладные и напоминания о долге (C6)."""
         assert self.conn is not None

@@ -18,6 +18,7 @@ from .config import Settings
 from .db import Database
 from .formatting import esc, format_missing, format_quality, money
 from . import arrivals
+from . import subreplace
 from . import catalogedit
 from . import missing
 from . import pricereview as price_review
@@ -272,6 +273,69 @@ async def cmd_income(
         text += "\n" + "\n".join(notes[:10])
     text += "\n\nНовые цены от закупки: /pricenew · история: /arrivals"
     await message.answer(text)
+
+
+@router.message(Command("sub"))
+async def cmd_sub(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Правила замены: /sub гуада чеддер · /sub гуада нет · /sub гуада спросить (C8)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(subreplace.rules_text(catalog, await db.sub_rules()))
+        return
+    parts = raw.rsplit(maxsplit=1)
+    if len(parts) != 2:
+        await message.answer(
+            "Формат: <code>/sub гуада чеддер</code> (замена), "
+            "<code>/sub гуада нет</code> (не заменять), "
+            "<code>/sub гуада спросить</code> (по умолчанию).\n"
+            "Без аргументов — список правил."
+        )
+        return
+    target_query, value = parts
+    matches = catalog.match(target_query, limit=1, min_score=60)
+    if not matches:
+        await message.answer(f"Не нашёл «{esc(target_query)}» в прайсе.")
+        return
+    item = matches[0].item
+    rule = subreplace.parse_rule(value)
+    if rule is None:
+        substitute = catalog.match(value, limit=1, min_score=60)
+        if not substitute:
+            await message.answer(
+                "Не понял правило. Можно: <code>нет</code>, <code>спросить</code> "
+                "или название позиции для замены."
+            )
+            return
+        chosen = substitute[0].item
+        if chosen.id == item.id:
+            await message.answer("Замена не может быть той же позицией.")
+            return
+        await db.set_sub_rule(item.id, subreplace.MODE_ONLY, chosen.id)
+        await message.answer(
+            f"🔁 «{esc(item.name)}»: если нет в наличии — предлагать "
+            f"«{esc(chosen.name)}»."
+        )
+        return
+    if rule.mode == subreplace.MODE_ASK:
+        await db.clear_sub_rule(item.id)
+        await message.answer(
+            f"🔁 «{esc(item.name)}»: снова спрашивать клиента и предлагать похожие."
+        )
+        return
+    await db.set_sub_rule(item.id, rule.mode)
+    await message.answer(
+        f"🔁 «{esc(item.name)}»: {rule.text}. Замена клиенту предлагаться не будет."
+        if rule.mode == subreplace.MODE_NO
+        else f"🔁 «{esc(item.name)}»: {rule.text}."
+    )
 
 
 @router.message(Command("stock"))
