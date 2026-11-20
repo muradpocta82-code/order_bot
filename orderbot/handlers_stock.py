@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
@@ -17,6 +18,9 @@ from .config import Settings
 from .db import Database
 from .formatting import esc, format_missing, format_quality, money
 from . import arrivals
+from . import catalogedit
+from . import missing
+from . import pricereview as price_review
 from .stock import (
     WARN_KEY,
     current as current_stock,
@@ -268,6 +272,90 @@ async def cmd_income(
         text += "\n" + "\n".join(notes[:10])
     text += "\n\nНовые цены от закупки: /pricenew · история: /arrivals"
     await message.answer(text)
+
+
+@router.message(Command("missadd"))
+async def cmd_missadd(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Добавляет позицию, которую просили, в прайс и сообщает клиентам (B11)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    new_item = missing.parse_missadd(raw)
+    if new_item is None:
+        await message.answer(
+            "Формат: <code>/missadd трюфель 12.50 кг Сыры</code>\n"
+            "Название, цена (обязательно), единица и категория — по желанию.\n"
+            "Сводку просят /missing."
+        )
+        return
+    existing = catalog.search(new_item.phrase)
+    if existing is not None:
+        await message.answer(
+            f"Такая позиция уже есть: «{esc(existing.name)}» — "
+            f"{money(existing.price)}/{esc(existing.unit)}."
+        )
+        return
+    archive = price_review.backup_catalog(
+        settings.catalog_path, settings.data_dir / "price_versions", "missadd"
+    )
+    if archive is not None:
+        try:
+            await db.add_price_version(
+                str(archive), "перед /missadd", len(catalog.items)
+            )
+            for old_path in await db.prune_price_versions(5):
+                try:
+                    Path(old_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception as exc:
+            log.warning("Не записал версию прайса: %s", exc)
+    try:
+        new_id = catalogedit.append_item(
+            settings.catalog_path,
+            new_item.name,
+            new_item.price,
+            unit=new_item.unit,
+            category=new_item.category,
+        )
+    except Exception as exc:
+        log.exception("Не удалось добавить позицию в прайс")
+        await message.answer(f"Не смог записать в прайс: {exc}")
+        return
+    catalogedit.reload_into(catalog, settings.catalog_path)
+    try:
+        catalog.dump_json(settings.data_dir / "catalog.json")
+    except Exception as exc:
+        log.warning("Не обновил catalog.json: %s", exc)
+    askers = await db.missing_askers(new_item.phrase, 60)
+    sent = 0
+    for user_id in askers:
+        try:
+            await message.bot.send_message(
+                int(user_id),
+                missing.client_notice(new_item.name, new_item.price, new_item.unit),
+            )
+            sent += 1
+        except Exception as exc:
+            log.info("Не сообщил клиенту %s о новой позиции: %s", user_id, exc)
+    lines = [
+        f"✅ Добавил в прайс: «{esc(new_item.name)}» — "
+        f"{money(new_item.price)}/{esc(new_item.unit)} (id {new_id}).",
+    ]
+    if sent:
+        lines.append(f"Сообщил клиентам, которые просили: {sent}.")
+    elif askers:
+        lines.append("Клиентам сообщить не удалось (не писали боту).")
+    else:
+        lines.append("Просивших не нашёл — сообщать некому.")
+    lines.append("Цена и название правятся как обычно: /price_set, /price.")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("arrivals"))

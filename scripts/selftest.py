@@ -1217,6 +1217,18 @@ async def test_stock_db() -> None:
         check("в истории количество", abs(float(row_in["qty"]) - 5.0) < 0.001, str(row_in["qty"]))
         costs = await db.costs_map()
         check("закупка записана приходом", abs(float(costs.get(item.id) or 0) - 1.25) < 0.001, str(costs.get(item.id)))
+
+        await db.add_missing_request(11, "  Трюфель  ")
+        await db.add_missing_request(11, "трюфель")
+        await db.add_missing_request(12, "трюфель")
+        await db.add_missing_request(12, "икра красная")
+        digest = await db.missing_digest(30, 10)
+        check("сводка запросов", digest and digest[0]["phrase"] == "трюфель", str(digest))
+        check("счётчик запросов", int(digest[0]["count"]) == 3, str(digest[0]))
+        check("разные клиенты", int(digest[0]["users"]) == 2, str(digest[0]))
+        askers = await db.missing_askers("трюфель", 60)
+        check("кто просил", sorted(askers) == [11, 12], str(askers))
+        check("неизвестный запрос — никого", await db.missing_askers("невидаль", 60) == [])
         await db.close()
 
 
@@ -1273,6 +1285,67 @@ def test_income() -> None:
 
     left = av.parse("помидоры 3 кг по 1.10, помидоры 2 кг по 1.20")
     check("повторы не склеиваются", len(left) == 2, str(left))
+
+
+def test_missing_demand() -> None:
+    print("\n[спрос без предложения: разбор /missadd и сводка]")
+    import shutil
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    from orderbot import catalogedit, missing as ms
+
+    item = ms.parse_missadd("трюфель 12.50 кг Сыры")
+    check("разбор названия", item is not None and item.name == "Трюфель", str(item))
+    check("цена", item is not None and item.price == 12.5, str(item))
+    check("единица", item is not None and item.unit == "кг", str(item))
+    check("категория", item is not None and item.category == "Сыры", str(item))
+    check("фраза нормализована", item is not None and item.phrase == "трюфель", str(item))
+    plain = ms.parse_missadd("икра красная 25")
+    check("без единицы — шт", plain is not None and plain.unit == "шт", str(plain))
+    check("цена с запятой", ms.parse_missadd("трюфель 12,50").price == 12.5)
+    check("без цены — отказ", ms.parse_missadd("трюфель") is None)
+    check("ноль — отказ", ms.parse_missadd("трюфель 0") is None)
+    check("одно слово — отказ", ms.parse_missadd("трюфель") is None)
+
+    rows = [
+        {"phrase": "трюфель", "count": 4, "users": 2},
+        {"phrase": "икра", "count": 2, "users": 1},
+    ]
+    digest = ms.digest_text(rows, 30)
+    check("сводка перечисляет запросы", "трюфель" in digest and "икра" in digest, digest)
+    check("в сводке клиенты", "клиентов: 2" in digest, digest)
+    check("в сводке подсказка", "/missadd" in digest, digest)
+    check("пустая сводка честна", "Пусто" in ms.digest_text([], 30))
+    check("уведомление клиенту", "Трюфель" in ms.client_notice("Трюфель", 12.5, "кг"))
+    check(
+        "нормализация фразы",
+        ms.normalize_phrase("  Трюфель   Чёрный ") == "трюфель черный",
+    )
+
+    tmp = Path(tempfile.mkdtemp())
+    target = tmp / "catalog.xlsx"
+    shutil.copy2(BASE_DIR / "catalog.xlsx", target)
+    before = Catalog.load(target)
+    new_id = catalogedit.append_item(target, "Трюфель чёрный", 12.5, "кг", category="Сыры")
+    check("id выдан", new_id > max(i.id for i in before.items), str(new_id))
+    after = Catalog.load(target)
+    check("позиций стало больше", len(after.items) == len(before.items) + 1, str(len(after.items)))
+    added = after.get(new_id)
+    check("позиция читается", added is not None and added.name == "Трюфель чёрный", str(added))
+    check("цена в файле", added is not None and added.price == 12.5, str(added))
+    check("единица в файле", added is not None and added.unit == "кг", str(added))
+    check("категория в файле", added is not None and added.category == "Сыры", str(added))
+    workbook = load_workbook(target, data_only=True, read_only=True)
+    worksheet = workbook.worksheets[0]
+    check("строка дописана в конец", worksheet.max_row >= len(after.items) + 1)
+    workbook.close()
+
+    reloaded = Catalog.load(BASE_DIR / "catalog.xlsx")
+    catalogedit.reload_into(reloaded, target)
+    check("перечитка переносит позицию", reloaded.get(new_id) is not None)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def test_db() -> None:
@@ -2047,6 +2120,7 @@ async def main() -> int:
     test_price_review()
     test_stock()
     test_income()
+    test_missing_demand()
     test_golden_live()
     test_module_names()
     await test_db()

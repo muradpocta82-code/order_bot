@@ -45,6 +45,7 @@ from orderbot.keyboards import (
 )
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
+from orderbot.missing import digest_text as missing_digest_text
 from orderbot.stock import (
     current as stock_current,
     hidden_ids,
@@ -696,6 +697,30 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _missing_digest_loop(
+    bot: Bot, db: Database, settings: Settings
+) -> None:
+    """Раз в неделю (пн, после 10:00): что просят, а в прайсе нет (B11)."""
+    manager = settings.manager_chat_id
+    while True:
+        try:
+            if manager is not None:
+                now = datetime.now(settings.timezone)
+                today = now.date().isoformat()
+                if (
+                    now.weekday() == 0
+                    and now.hour >= 10
+                    and await db.get_setting("missing_digest_day") != today
+                ):
+                    rows = await db.missing_digest(30, 10)
+                    await db.set_setting("missing_digest_day", today)
+                    await bot.send_message(int(manager), missing_digest_text(rows, 30))
+                    log.info("Сводка запросов вне прайса отправлена: %s поз.", len(rows))
+        except Exception as exc:
+            log.warning("Ошибка сводки запросов вне прайса: %s", exc)
+        await asyncio.sleep(6 * 3600)
+
+
 async def _price_review_loop(
     bot: Bot, db: Database, settings: Settings
 ) -> None:
@@ -1174,6 +1199,9 @@ async def run() -> int:
     )
     price_review_task = asyncio.create_task(
         _price_review_loop(bot, db, settings), name="price-review"
+    )
+    missing_digest_task = asyncio.create_task(
+        _missing_digest_loop(bot, db, settings), name="missing-digest"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"

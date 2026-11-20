@@ -898,6 +898,7 @@ async def cb_none(
         await callback.answer("Не нашёл эту позицию", show_alert=True)
         return
     await db.record_missing(item.get("raw") or "")
+    await db.add_missing_request(callback.from_user.id, item.get("raw") or "")
     await db.save_draft(draft)
     await callback.answer("Хорошо")
     await _advance_draft(

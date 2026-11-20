@@ -287,6 +287,43 @@ class Database:
         )
         await self.conn.commit()
 
+    async def add_missing_request(self, user_id: int, phrase: str) -> None:
+        """Запоминает, кто и что просил вне прайса (B11)."""
+        assert self.conn is not None
+        clean = " ".join(str(phrase).lower().replace("ё", "е").split())
+        if not clean:
+            return
+        await self.conn.execute(
+            "INSERT INTO missing_requests(user_id, phrase) VALUES (%s, %s)",
+            (int(user_id or 0), clean[:200]),
+        )
+        await self.conn.commit()
+
+    async def missing_digest(
+        self, days: int = 30, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Топ запросов вне прайса: сколько раз и сколько разных клиентов."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT phrase, count(*) AS count, count(DISTINCT user_id) AS users "
+            "FROM missing_requests WHERE ts >= now() - (%s || ' days')::interval "
+            "GROUP BY phrase ORDER BY count DESC, users DESC, phrase LIMIT %s",
+            (int(days), int(limit)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def missing_askers(self, phrase: str, days: int = 30) -> list[int]:
+        """Кто просил позицию: id клиентов для уведомления о появлении."""
+        assert self.conn is not None
+        clean = " ".join(str(phrase).lower().replace("ё", "е").split())
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT user_id FROM missing_requests "
+            "WHERE phrase = %s AND ts >= now() - (%s || ' days')::interval "
+            "AND user_id IS NOT NULL",
+            (clean[:200], int(days)),
+        )
+        return [int(row["user_id"]) for row in await cursor.fetchall() if row["user_id"]]
+
     async def list_missing(
         self, days: int = 30, limit: int = 15
     ) -> list[dict[str, Any]]:
