@@ -1049,6 +1049,84 @@ def test_module_names() -> None:
     check("нет забытых импортов", not problems, "; ".join(problems))
 
 
+def test_price_review() -> None:
+    print("\n[цены на завтра: закупка + наценка]")
+    import shutil
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    from orderbot import pricereview as pr
+    from orderbot.catalog import Catalog, CatalogItem
+
+    check("целевая цена от закупки", pr.target_price(10, 25) == 12.5, str(pr.target_price(10, 25)))
+    check("нулевая наценка", pr.target_price(10, 0) == 10.0)
+    check("отрицательная наценка не принимается", pr.clamp_markup(-5) == 0.0)
+    check("наценка сверху ограничена", pr.clamp_markup(9999) == pr.MAX_MARKUP)
+    check("мусор в наценке", pr.clamp_markup("abc") == pr.DEFAULT_MARKUP)
+
+    tiny = Catalog()
+    tiny.add(CatalogItem(id=1, name="Помидоры", synonyms=(), unit="кг", pack="", price=10.0, category="Овощи"))
+    tiny.add(CatalogItem(id=2, name="Филе", synonyms=(), unit="кг", pack="", price=50.0, category="Мясо"))
+    tiny.add(CatalogItem(id=3, name="Сыр", synonyms=(), unit="кг", pack="", price=9.0, category="Сыры"))
+    costs = {1: 8.0, 2: 12.0}
+    proposals, missing = pr.build(tiny, costs, {"Овощи": 25, "Мясо": 25, "Сыры": 25}, 25)
+    ids = [p.catalog_id for p in proposals]
+    check("совпадающая цена не в предложении", 1 not in ids, str(ids))
+    check("пересчёт по наценке", any(p.catalog_id == 2 and p.new_price == 15.0 for p in proposals), str(proposals))
+    check("без закупки — в счётчик", missing == 1, str(missing))
+    meat = next(p for p in proposals if p.catalog_id == 2)
+    check("процент изменения", round(meat.percent) == -70, str(meat.percent))
+    check("резкое изменение помечено", meat.big_change)
+    check("маржа по новой цене", round(meat.margin_percent) == 20, str(meat.margin_percent))
+    rendered = pr.render(proposals, missing)
+    check("в тексте стрелка", "▼" in rendered, rendered)
+    check("в тексте предупреждение", "Без закупочной цены" in rendered, rendered)
+    check("пустое предложение честно", "менять нечего" in pr.render([], 3))
+
+    prices = {2: 15.0, 3: 11.11}
+    check("сохранение предложения", pr.from_payload(pr.payload(prices)) == {2: 15.0, 3: 11.11})
+    check("битый JSON не роняет", pr.from_payload("{не json") == {})
+    check("мусорные цены отброшены", pr.from_payload('[{"id": 1, "price": -3}]') == {})
+
+    tmp = Path(tempfile.mkdtemp())
+    target = tmp / "catalog.xlsx"
+    shutil.copy2(BASE_DIR / "catalog.xlsx", target)
+    written, not_found = pr.write_prices(target, {2: 12.34, 999999: 5.0})
+    check("записано в прайс", written == 1, str(written))
+    check("несуществующий id", not_found == 1, str(not_found))
+    workbook = load_workbook(target, data_only=True, read_only=True)
+    worksheet = workbook.worksheets[0]
+    header = [str(cell.value or "").strip().lower() for cell in next(worksheet.iter_rows(max_row=1))]
+    price_col = next(i for i, t in enumerate(header) if t.startswith("цена"))
+    row = next(r for r in worksheet.iter_rows(min_row=2, values_only=True) if int(r[0]) == 2)
+    check("цена доехала в файл", abs(float(row[price_col]) - 12.34) < 0.001, str(row[price_col]))
+    workbook.close()
+    archive = pr.backup_catalog(target, tmp / "versions", "test")
+    check("архив перед правкой", archive is not None and Path(archive).exists(), str(archive))
+    check("копия в архив", len(list((tmp / "versions").glob("*.xlsx"))) == 1)
+
+    loaded = Catalog.load(BASE_DIR / "catalog.xlsx")
+    before = next(i.price for i in loaded.items if i.id == 2)
+    pr.apply_to_catalog(loaded, {2: 99.0})
+    after = next(i.price for i in loaded.items if i.id == 2)
+    check("память обновилась", after == 99.0 and before != 99.0, f"{before} -> {after}")
+    phrase_items = [item for item, _n, _l in loaded._phrases]
+    item2 = loaded.by_id[2]
+    check(
+        "фразы ссылаются на новые объекты",
+        all(item is loaded.by_id[item.id] for item in phrase_items if item.id in loaded.by_id),
+    )
+    check("цена в фразах новая", item2.price == 99.0)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    today = datetime(2026, 11, 20).date()
+    check("напоминание без истории", pr.needs_reminder(None, None, today))
+    check("не чаще раза в неделю", not pr.needs_reminder("2026-10-01", "2026-11-18", today))
+    check("через неделю снова можно", pr.needs_reminder("2026-10-01", "2026-11-10", today))
+    check("текст напоминания", "порог" in pr.reminder_text(14, None))
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -1818,6 +1896,7 @@ async def main() -> int:
     test_route_plan()
     test_ledger_math()
     test_writeoff()
+    test_price_review()
     test_golden_live()
     test_module_names()
     await test_db()

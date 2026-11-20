@@ -168,6 +168,8 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /order 12 — заказ №12
 /price — прайс
 /missing — чего нет в прайсе
+/pricenew — цены на завтра из закупки
+/markup — наценки по категориям
 /quality — качество разбора
 /health — здоровье бота
 /slots — интервалы доставки (например /slots 9-12,12-15,15-18)
@@ -2928,6 +2930,10 @@ from .handlers_reports import router as _reports_router  # noqa: E402
 router.include_router(_reports_router)
 
 # Широкие обработчики подключаются последними.
+from .handlers_prices import router as _prices_router  # noqa: E402
+
+router.include_router(_prices_router)
+
 from .handlers_tail import router as _tail_router  # noqa: E402
 
 router.include_router(_tail_router)

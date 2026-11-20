@@ -44,6 +44,7 @@ from orderbot.keyboards import (
     reminder_keyboard,
 )
 from orderbot.pricecast import send_morning_prices
+from orderbot import pricereview as price_review
 from orderbot.pending import purge_pending_prices
 from orderbot.quiet import bind as bind_quiet, flush_queue
 from orderbot.stt import Transcriber
@@ -680,6 +681,18 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _price_review_loop(
+    bot: Bot, db: Database, settings: Settings
+) -> None:
+    """Напоминание менеджеру пересмотреть цены (B6), не чаще раза в неделю."""
+    while True:
+        try:
+            await price_review.send_reminder(bot, db, settings)
+        except Exception as exc:
+            log.warning("Ошибка напоминания о прайсе: %s", exc)
+        await asyncio.sleep(6 * 3600)
+
+
 async def _morning_summary(bot: Bot, db: Database, settings: Settings) -> bool:
     """Сводка «что горит» владельцу каждое утро, один раз в день."""
     manager = settings.manager_chat_id
@@ -1073,6 +1086,8 @@ async def run() -> int:
                         BotCommand(command="quality", description="Качество разбора"),
                         BotCommand(command="health", description="Здоровье"),
                         BotCommand(command="today", description="Сводка дня"),
+                        BotCommand(command="pricenew", description="Цены на завтра"),
+                        BotCommand(command="markup", description="Наценки"),
                     ],
                     scope=BotCommandScopeChat(chat_id=settings.manager_chat_id),
                 )
@@ -1126,6 +1141,9 @@ async def run() -> int:
     )
     price_task = asyncio.create_task(
         _price_morning_loop(bot, db, settings, catalog), name="price-morning"
+    )
+    price_review_task = asyncio.create_task(
+        _price_review_loop(bot, db, settings), name="price-review"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"
