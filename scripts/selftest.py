@@ -1259,6 +1259,15 @@ async def test_stock_db() -> None:
         check("выключено — не списывает", consumed_off == 0)
         await db.set_setting(st.SALES_KEY, "1")
 
+        await db.set_payer(987654321, 123456789)
+        check("плательщик записан", await db.payers_for(123456789) == [987654321])
+        rows_payers = await db.payer_rows()
+        check("список плательщиков", any(int(r["user_id"]) == 987654321 for r in rows_payers), str(rows_payers))
+        check("чужая точка — никого", await db.payers_for(111) == [])
+        check("снятие роли", await db.remove_payer(987654321))
+        check("после снятия пусто", await db.payers_for(123456789) == [])
+        check("повторное снятие — False", not await db.remove_payer(987654321))
+
         check("оценки бригады читаются", isinstance(await db.staff_ratings(7), list))
         check("оценки заказов читаются", isinstance(await db.order_ratings(7), list))
 
@@ -1503,6 +1512,26 @@ def test_staff_ratings() -> None:
     check("без данных блок пустой", sr.ratings_block([]) == [])
     check("строка про сервис", "Средняя оценка" in sr.overall_line([4, 5, 3]), sr.overall_line([4, 5, 3]))
     check("нет оценок — честно", "не было" in sr.overall_line([]))
+
+
+def test_payer_role() -> None:
+    print("\n[роль плательщика: разбор и тексты]")
+    from orderbot import payer
+
+    check("пара разобрана", payer.parse_pair("123456789 987654321") == (123456789, 987654321))
+    check("один id — отказ", payer.parse_pair("123456789") is None)
+    check("три id — отказ", payer.parse_pair("1 2 3") is None)
+    check("одинаковые id — отказ", payer.parse_pair("555555 555555") is None)
+    check("короткие id не берём", payer.parse_pair("12 34") is None)
+    check("один id для снятия", payer.parse_single("987654321") == 987654321)
+    check("два id для снятия — отказ", payer.parse_single("1 2") is None)
+    check("пусто — отказ", payer.parse_single("") is None)
+    connected = payer.connected_text("Кафе Роза")
+    check("текст подключения", "Кафе Роза" in connected and "накладные" in connected, connected)
+    debt = payer.debt_text("Кафе Роза", 120.5, 3, 21)
+    check("текст долга с суммой", "$120.50" in debt, debt)
+    check("текст долга со сроком", "21 дней" in debt, debt)
+    check("текст снятия роли", "снята" in payer.removed_text())
 
 
 async def test_db() -> None:
@@ -2282,6 +2311,7 @@ async def main() -> int:
     test_churn_rhythm()
     test_manager_reply()
     test_staff_ratings()
+    test_payer_role()
     test_golden_live()
     test_module_names()
     await test_db()

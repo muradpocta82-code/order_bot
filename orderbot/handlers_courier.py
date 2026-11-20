@@ -271,13 +271,21 @@ async def cb_courier_done(
         pdf_path = settings.data_dir / f"invoice_{order_id}.pdf"
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         build_invoice(order, pdf_path)
+        recipients: list[int] = []
         for chat in (order.get("chef_id"), manager):
             if chat:
-                await callback.bot.send_document(
-                    int(chat),
-                    FSInputFile(str(pdf_path)),
-                    caption=f"Накладная №{order_id}",
-                )
+                recipients.append(int(chat))
+        if order.get("chef_id"):
+            try:
+                recipients.extend(await db.payers_for(int(order["chef_id"])))
+            except Exception as exc:
+                log.info("Не нашёл плательщиков заказа №%s: %s", order_id, exc)
+        for chat in list(dict.fromkeys(recipients)):
+            await callback.bot.send_document(
+                chat,
+                FSInputFile(str(pdf_path)),
+                caption=f"Накладная №{order_id}",
+            )
     except Exception:
         log.warning("Не удалось отправить накладную №%s", order_id, exc_info=True)
     log.info(

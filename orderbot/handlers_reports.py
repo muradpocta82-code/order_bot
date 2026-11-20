@@ -38,6 +38,7 @@ from .pending import take_pending_costs
 from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
+from . import payer
 from . import replies
 from .staffrating import overall_line as staff_rating_line
 from .staffrating import ratings_block as staff_rating_block
@@ -853,6 +854,77 @@ async def cmd_costvoice(
         return
     status = await message.answer("Разбираю цены…")
     await _costs_from_text(message, status, db, settings, catalog, raw)
+
+
+@router.message(Command("payer"))
+async def cmd_payer(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Плательщик точки: /payer клиент_id плательщик_id (C6)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parsed = payer.parse_pair(command.args or "")
+    if parsed is None:
+        rows = await db.payer_rows()
+        lines = ["💳 <b>Плательщики</b>", ""]
+        if rows:
+            for row in rows:
+                lines.append(
+                    f"• {esc(row.get('venue_name') or row.get('venue_id'))} — "
+                    f"плательщик {row.get('user_id')}"
+                )
+        else:
+            lines.append("Пока никого.")
+        lines.append("")
+        lines.append(
+            "Подключить: <code>/payer клиент_id плательщик_id</code> · "
+            "снять: <code>/payer_del плательщик_id</code>"
+        )
+        lines.append("Id клиента — в /client, id плательщика — /id с его телефона.")
+        await message.answer("\n".join(lines))
+        return
+    client_id, payer_id = parsed
+    client = await db.get_user(client_id)
+    if client is None:
+        await message.answer(f"Клиент с id {client_id} не найден.")
+        return
+    if await db.get_user(payer_id) is None:
+        await message.answer(
+            f"Плательщик с id {payer_id} ещё не писал боту — пусть отправит /start, "
+            "и повторите команду."
+        )
+        return
+    await db.set_payer(payer_id, client_id)
+    name = client.get("name") or client.get("venue") or str(client_id)
+    try:
+        await message.bot.send_message(payer_id, payer.connected_text(str(name)))
+    except Exception as exc:
+        log.info("Не сообщил плательщику %s: %s", payer_id, exc)
+    await message.answer(
+        f"✅ Плательщик {payer_id} подключён к точке «{esc(name)}».\n"
+        "Накладные и напоминания о долге будут приходить и ему."
+    )
+
+
+@router.message(Command("payer_del"))
+async def cmd_payer_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Снять роль плательщика: /payer_del плательщик_id."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    payer_id = payer.parse_single(command.args or "")
+    if payer_id is None:
+        await message.answer("Формат: <code>/payer_del 987654321</code>")
+        return
+    if not await db.remove_payer(payer_id):
+        await message.answer("Такого плательщика нет.")
+        return
+    try:
+        await message.bot.send_message(payer_id, payer.removed_text())
+    except Exception:
+        pass
+    await message.answer(f"Роль плательщика снята с {payer_id}.")
 
 
 @router.message(Command("team"))

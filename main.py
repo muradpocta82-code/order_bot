@@ -53,6 +53,7 @@ from orderbot.keyboards import (
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
 from orderbot.churn import alert_text as churn_alert_text
+from orderbot.payer import debt_text as payer_debt_text
 from orderbot.staffrating import overall_line as staff_rating_line
 from orderbot.staffrating import ratings_block as staff_rating_block
 from orderbot.habit import nudge_text as habit_nudge_text, should_nudge
@@ -731,6 +732,16 @@ async def _debt_reminders(bot: Bot, db: Database, settings: Settings) -> int:
             sent += 1
         except Exception as exc:
             log.warning("Напоминание о долге не отправлено %s: %s", chef_id, exc)
+        # C6: те же суммы — плательщику точки, если он подключён.
+        try:
+            for payer_id in await db.payers_for(chef_id):
+                name = (user or {}).get("name") or (user or {}).get("venue") or str(chef_id)
+                await bot.send_message(
+                    payer_id, payer_debt_text(str(name), debt, count, age)
+                )
+                sent += 1
+        except Exception as exc:
+            log.info("Напоминание плательщику по %s не ушло: %s", chef_id, exc)
     await db.set_setting("last_debt_reminder", today)
     if sent:
         log.info("Напоминания о долге отправлены: %s", sent)

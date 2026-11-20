@@ -1919,6 +1919,46 @@ class Database:
             "diff": diff,
         }
 
+    async def set_payer(self, user_id: int, venue_id: int, role: str = "payer") -> None:
+        """Плательщик точки: получает накладные и напоминания о долге (C6)."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO venue_contacts(user_id, venue_id, role) VALUES (%s, %s, %s) "
+            "ON CONFLICT(user_id) DO UPDATE SET venue_id = excluded.venue_id, "
+            "role = excluded.role",
+            (int(user_id), int(venue_id), role[:20]),
+        )
+        await self.conn.commit()
+
+    async def remove_payer(self, user_id: int) -> bool:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "DELETE FROM venue_contacts WHERE user_id = %s AND role = 'payer'",
+            (int(user_id),),
+        )
+        await self.conn.commit()
+        return int(cursor.rowcount or 0) > 0
+
+    async def payers_for(self, venue_id: int) -> list[int]:
+        """Кто оплачивает эту точку."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM venue_contacts WHERE venue_id = %s AND role = 'payer'",
+            (int(venue_id),),
+        )
+        return [int(row["user_id"]) for row in await cursor.fetchall()]
+
+    async def payer_rows(self) -> list[dict[str, Any]]:
+        """Все плательщики: id, точка, имя точки если известно."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT v.user_id, v.venue_id, v.role, "
+            "COALESCE(u.name, v.venue_id::text) AS venue_name "
+            "FROM venue_contacts v LEFT JOIN users u ON u.user_id = v.venue_id "
+            "WHERE v.role = 'payer' ORDER BY v.created_at",
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def staff_ratings(self, days: int = 7) -> list[dict[str, Any]]:
         """Оценки по упаковщикам и курьерам за период (C13)."""
         assert self.conn is not None
