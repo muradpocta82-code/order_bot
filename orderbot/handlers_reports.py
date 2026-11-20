@@ -39,6 +39,8 @@ from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from . import replies
+from .staffrating import overall_line as staff_rating_line
+from .staffrating import ratings_block as staff_rating_block
 from .roles import _is_manager, _manager_ok
 from .summary import today_summary
 from .buylist import as_text as buylist_text, as_xlsx as buylist_xlsx, collect as buylist_collect
@@ -851,6 +853,29 @@ async def cmd_costvoice(
         return
     status = await message.answer("Разбираю цены…")
     await _costs_from_text(message, status, db, settings, catalog, raw)
+
+
+@router.message(Command("team"))
+async def cmd_team(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Оценки бригады за период: /team или /team 30 (C13)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    days = max(1, min(365, int(raw))) if raw.isdigit() else 7
+    rows = await db.staff_ratings(days)
+    ratings = await db.order_ratings(days)
+    lines = [f"⭐ <b>Оценки бригады за {days} дн.</b>", staff_rating_line(ratings)]
+    block = staff_rating_block(rows)
+    if block:
+        lines.extend(["", *block])
+        lines.append("")
+        lines.append("Мало оценок (меньше двух) в отчёт не попадает.")
+    elif not ratings:
+        lines.append("")
+        lines.append("Оценок пока нет — они появляются после доставки.")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("reply"))

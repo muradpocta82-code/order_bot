@@ -53,6 +53,8 @@ from orderbot.keyboards import (
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
 from orderbot.churn import alert_text as churn_alert_text
+from orderbot.staffrating import overall_line as staff_rating_line
+from orderbot.staffrating import ratings_block as staff_rating_block
 from orderbot.habit import nudge_text as habit_nudge_text, should_nudge
 from orderbot.missing import digest_text as missing_digest_text
 from orderbot.stock import (
@@ -961,6 +963,11 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
             dropped=len(dropped),
         )
     )
+    try:
+        extra.extend(staff_rating_block(await db.staff_ratings(7)))
+        extra.append(staff_rating_line(await db.order_ratings(7)))
+    except Exception as exc:
+        log.warning("Не удалось собрать оценки бригады: %s", exc)
     text = weekly_report(
         orders,
         venues,

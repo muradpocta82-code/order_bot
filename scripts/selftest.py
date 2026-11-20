@@ -1259,6 +1259,9 @@ async def test_stock_db() -> None:
         check("выключено — не списывает", consumed_off == 0)
         await db.set_setting(st.SALES_KEY, "1")
 
+        check("оценки бригады читаются", isinstance(await db.staff_ratings(7), list))
+        check("оценки заказов читаются", isinstance(await db.order_ratings(7), list))
+
         days = await db.client_order_days(120)
         check("дни заказов читаются", isinstance(days, list))
         check("заказа на 2030 год нет", not await db.ordered_on(11, "2030-01-01"))
@@ -1470,6 +1473,36 @@ def test_manager_reply() -> None:
     check("подсказка про ответ", "/reply" in replies.forward_note())
     check("текст клиенту", replies.reply_for_client("уже везём").startswith("💬 Менеджер"))
     check("имя менеджера в тексте", "Азиз" in replies.reply_for_client("уже везём", "Азиз"))
+
+
+def test_staff_ratings() -> None:
+    print("\n[оценки бригады: средняя и недовольные]")
+    from orderbot import staffrating as sr
+
+    check("средняя", sr.average([5, 4, 3]) == 4.0, str(sr.average([5, 4, 3])))
+    check("без оценок — ноль", sr.average([]) == 0.0)
+    check("доля недовольных", round(sr.low_share([1, 2, 5, 5])) == 50, str(sr.low_share([1, 2, 5, 5])))
+    check("все довольны", sr.low_share([4, 5, 5]) == 0.0)
+    check("пусто — ноль", sr.low_share([]) == 0.0)
+
+    rows = [
+        {"role": "packer", "name": "Азиз", "n": 4, "total": 18, "low": 1},
+        {"role": "courier", "name": "Сергей", "n": 3, "total": 9, "low": 2},
+        {"role": "courier", "name": "Новичок", "n": 1, "total": 2, "low": 1},
+    ]
+    prepared = sr.staff_rows(rows)
+    check("строки посчитаны", len(prepared) == 3, str(prepared))
+    check("средняя упаковщика", prepared[0]["avg"] == 4.5 or any(r["avg"] == 4.5 for r in prepared), str(prepared))
+    check("сортировка худших вперёд", prepared[0]["avg"] <= prepared[-1]["avg"], str(prepared))
+    block = sr.ratings_block(rows)
+    text = "\n".join(block)
+    check("в блоке упаковщик", "упаковщик Азиз" in text, text)
+    check("в блоке курьер", "курьер Сергей" in text, text)
+    check("мало оценок не показываем", "Новичок" not in text, text)
+    check("предупреждение о худшем", "Стоит поговорить" in text, text)
+    check("без данных блок пустой", sr.ratings_block([]) == [])
+    check("строка про сервис", "Средняя оценка" in sr.overall_line([4, 5, 3]), sr.overall_line([4, 5, 3]))
+    check("нет оценок — честно", "не было" in sr.overall_line([]))
 
 
 async def test_db() -> None:
@@ -2248,6 +2281,7 @@ async def main() -> int:
     test_habit()
     test_churn_rhythm()
     test_manager_reply()
+    test_staff_ratings()
     test_golden_live()
     test_module_names()
     await test_db()

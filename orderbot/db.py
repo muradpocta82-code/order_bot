@@ -1919,6 +1919,41 @@ class Database:
             "diff": diff,
         }
 
+    async def staff_ratings(self, days: int = 7) -> list[dict[str, Any]]:
+        """Оценки по упаковщикам и курьерам за период (C13)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT 'packer' AS role, o.assigned_to AS staff_id, "
+            "COALESCE(s.name, o.assigned_to::text) AS name, "
+            "COUNT(*) AS n, SUM(o.rating) AS total, "
+            "SUM(CASE WHEN o.rating <= 3 THEN 1 ELSE 0 END) AS low "
+            "FROM orders o LEFT JOIN staff s ON s.user_id = o.assigned_to "
+            "WHERE o.rating IS NOT NULL AND o.assigned_to IS NOT NULL "
+            "AND o.created_at >= now() - (%s || ' days')::interval "
+            "GROUP BY o.assigned_to, s.name "
+            "UNION ALL "
+            "SELECT 'courier' AS role, o.courier_chat_id AS staff_id, "
+            "COALESCE(s.name, o.courier_chat_id::text) AS name, "
+            "COUNT(*) AS n, SUM(o.rating) AS total, "
+            "SUM(CASE WHEN o.rating <= 3 THEN 1 ELSE 0 END) AS low "
+            "FROM orders o LEFT JOIN staff s ON s.user_id = o.courier_chat_id "
+            "WHERE o.rating IS NOT NULL AND o.courier_chat_id IS NOT NULL "
+            "AND o.created_at >= now() - (%s || ' days')::interval "
+            "GROUP BY o.courier_chat_id, s.name",
+            (int(days), int(days)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def order_ratings(self, days: int = 7) -> list[int]:
+        """Все оценки за период — для строки «средняя оценка»."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT rating FROM orders WHERE rating IS NOT NULL "
+            "AND created_at >= now() - (%s || ' days')::interval",
+            (int(days),),
+        )
+        return [int(row["rating"]) for row in await cursor.fetchall()]
+
     async def set_order_rating(self, order_id: int, rating: int) -> None:
         assert self.conn is not None
         await self.conn.execute(
