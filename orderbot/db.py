@@ -1483,6 +1483,30 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def client_order_days(self, days: int = 120) -> list[dict[str, Any]]:
+        """Даты заказов по клиентам за период (C2: привычный день недели)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT o.chef_id, COALESCE(u.name, o.chef_name, o.chef_id::text) AS chef_name, "
+            "o.delivery_date::date AS day "
+            "FROM orders o LEFT JOIN users u ON u.user_id = o.chef_id "
+            "WHERE o.status NOT IN ('cancelled') "
+            "AND o.created_at >= now() - (%s || ' days')::interval "
+            "ORDER BY o.chef_id, o.delivery_date",
+            (int(days),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def ordered_on(self, chef_id: int, day: str) -> bool:
+        """Есть ли у клиента заказ на эту дату доставки."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM orders WHERE chef_id = %s AND delivery_date::date = %s "
+            "AND status != 'cancelled' LIMIT 1",
+            (int(chef_id), str(day)[:10]),
+        )
+        return await cursor.fetchone() is not None
+
     async def add_claim(self, order_id: int, user_id: int, text: str) -> int:
         assert self.conn is not None
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -274,6 +274,35 @@ async def cmd_income(
     await message.answer(text)
 
 
+@router.message(Command("habit"))
+async def cmd_habit(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Напоминания «обычно вы заказываете по средам» (C2)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg in ("off", "0", "выкл", "нет"):
+        await db.set_setting("habit_nudge_enabled", "0")
+        await message.answer("Напоминания по привычке выключены.")
+        return
+    if arg in ("on", "1", "вкл", "да"):
+        await db.set_setting("habit_nudge_enabled", "1")
+        await message.answer(
+            "Напоминания по привычке включены: в привычный день недели клиент, "
+            "который ещё не заказал, получит «Собрать как обычно?»."
+        )
+        return
+    enabled = await db.get_setting("habit_nudge_enabled", "1") == "1"
+    rows = await db.client_order_days(120)
+    clients = {int(row["chef_id"]) for row in rows if row.get("chef_id") is not None}
+    await message.answer(
+        f"Напоминания по привычке: {'включены' if enabled else 'выключены'}.\n"
+        f"Клиентов с историей за 120 дней: {len(clients)}.\n"
+        "Включить: /habit on · выключить: /habit off"
+    )
+
+
 @router.message(Command("missadd"))
 async def cmd_missadd(
     message: Message,

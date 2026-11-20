@@ -45,6 +45,7 @@ from orderbot.keyboards import (
 )
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
+from orderbot.habit import nudge_text as habit_nudge_text, should_nudge
 from orderbot.missing import digest_text as missing_digest_text
 from orderbot.stock import (
     current as stock_current,
@@ -697,6 +698,61 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _habit_loop(
+    bot: Bot, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    """C2: в привычный день клиента, если заказа нет, — предложить «как обычно»."""
+    while True:
+        try:
+            now = datetime.now(settings.timezone)
+            today = now.date().isoformat()
+            if now.hour >= 10 and await db.get_setting("habit_nudge_day") != today:
+                if await db.get_setting("habit_nudge_enabled", "1") == "1":
+                    await db.set_setting("habit_nudge_day", today)
+                    await _send_habit_nudges(bot, db, settings, catalog, now.date())
+        except Exception as exc:
+            log.warning("Ошибка напоминаний по привычке: %s", exc)
+        await asyncio.sleep(3600)
+
+
+async def _send_habit_nudges(
+    bot: Bot, db: Database, settings: Settings, catalog: Catalog, today
+) -> int:
+    """Рассылает «обычно вы заказываете по средам» тем, кто ещё не заказал."""
+    rows = await db.client_order_days(120)
+    by_client: dict[int, dict] = {}
+    for row in rows:
+        chef_id = row.get("chef_id")
+        if chef_id is None:
+            continue
+        entry = by_client.setdefault(
+            int(chef_id), {"name": row.get("chef_name"), "days": []}
+        )
+        entry["days"].append(str(row.get("day"))[:10])
+    sent = 0
+    for chef_id, entry in by_client.items():
+        if sent >= 30:
+            break
+        try:
+            if await db.get_chat_state(chef_id, "remind_off"):
+                continue
+            if not should_nudge(entry["days"], today, await db.ordered_on(chef_id, today.isoformat())):
+                continue
+            usual = await db.usual_items(chef_id, 5)
+            names = [str(item.get("name")) for item in usual if item.get("name")]
+            await bot.send_message(
+                chef_id,
+                habit_nudge_text(today.weekday(), names),
+                reply_markup=reminder_keyboard(int(chef_id)),
+            )
+            sent += 1
+        except Exception as exc:
+            log.info("Не отправил напоминание клиенту %s: %s", chef_id, exc)
+    if sent:
+        log.info("Напоминания по привычке: %s клиентам", sent)
+    return sent
+
+
 async def _missing_digest_loop(
     bot: Bot, db: Database, settings: Settings
 ) -> None:
@@ -1202,6 +1258,9 @@ async def run() -> int:
     )
     missing_digest_task = asyncio.create_task(
         _missing_digest_loop(bot, db, settings), name="missing-digest"
+    )
+    habit_task = asyncio.create_task(
+        _habit_loop(bot, db, settings, catalog), name="habit-nudges"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"

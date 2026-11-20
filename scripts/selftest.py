@@ -1228,6 +1228,10 @@ async def test_stock_db() -> None:
         check("разные клиенты", int(digest[0]["users"]) == 2, str(digest[0]))
         askers = await db.missing_askers("трюфель", 60)
         check("кто просил", sorted(askers) == [11, 12], str(askers))
+
+        days = await db.client_order_days(120)
+        check("дни заказов читаются", isinstance(days, list))
+        check("заказа на 2030 год нет", not await db.ordered_on(11, "2030-01-01"))
         check("неизвестный запрос — никого", await db.missing_askers("невидаль", 60) == [])
         await db.close()
 
@@ -1346,6 +1350,34 @@ def test_missing_demand() -> None:
     catalogedit.reload_into(reloaded, target)
     check("перечитка переносит позицию", reloaded.get(new_id) is not None)
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_habit() -> None:
+    print("\n[черновик по расписанию: привычный день недели]")
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+
+    from orderbot import habit
+
+    wednesdays = ["2026-10-07", "2026-10-14", "2026-10-21", "2026-10-28"]
+    mixed = ["2026-10-07", "2026-10-14", "2026-10-09", "2026-10-12", "2026-10-15"]
+    check("счёт по дням недели", habit.weekday_counts(wednesdays)[2] == 4, str(habit.weekday_counts(wednesdays)))
+    check("привычная среда", habit.usual_weekday(wednesdays, 2), str(habit.weekday_counts(wednesdays)))
+    check("две среды из пяти — не привычка", not habit.usual_weekday(mixed, 2), str(habit.weekday_counts(mixed)))
+    check("порог доли работает", not habit.usual_weekday(wednesdays + ["2026-10-05"] * 12, 2, min_share=0.5))
+    check("мало заказов — не привычка", not habit.usual_weekday(["2026-10-07"], 2))
+    check("другой день недели", not habit.usual_weekday(wednesdays, 0))
+    check("битые даты пропускаются", habit.weekday_counts(["не дата", ""]) == {})
+
+    today = _date(2026, 11, 4)  # среда
+    check("сегодня среда", today.weekday() == 2)
+    check("условие срабатывает", habit.should_nudge(wednesdays, today, False))
+    check("заказал сегодня — молчим", not habit.should_nudge(wednesdays, today, True))
+    check("не его день — молчим", not habit.should_nudge(wednesdays, today + _timedelta(days=1), False))
+    text = habit.nudge_text(2, ["Куриное филе", "Моцарелла"])
+    check("в тексте день недели", "средам" in text, text)
+    check("в тексте позиции", "Куриное филе" in text, text)
+    check("без позиций текст проще", "Обычно берёте" not in habit.nudge_text(3))
 
 
 async def test_db() -> None:
@@ -2121,6 +2153,7 @@ async def main() -> int:
     test_stock()
     test_income()
     test_missing_demand()
+    test_habit()
     test_golden_live()
     test_module_names()
     await test_db()
