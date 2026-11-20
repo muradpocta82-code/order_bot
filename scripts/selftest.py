@@ -1447,6 +1447,31 @@ def test_churn_rhythm() -> None:
     check("текст клиенту без ритма", "давно не заказывали" in churn.client_text(None))
 
 
+def test_manager_reply() -> None:
+    print("\n[ответ менеджера клиенту: разбор /reply]")
+    from orderbot import replies
+
+    parsed = replies.parse_reply("12345 Заказ собирают, курьер после обеда")
+    check("id и текст разобраны", parsed == (12345, "Заказ собирают, курьер после обеда"), str(parsed))
+    check("длинный текст обрезается", len(replies.parse_reply("1 " + "а" * 5000)[1]) <= replies.MAX_REPLY)
+    check("без id — отказ", replies.parse_reply("Привет, как дела") is None)
+    check("без текста — отказ", replies.parse_reply("12345") is None)
+    check("ноль не принимаем", replies.parse_reply("0 текст") is None)
+    check("отрицательный id", replies.parse_reply("-5 текст") is None)
+    check("пустая строка", replies.parse_reply("") is None)
+
+    check(
+        "id из пересланного сообщения",
+        replies.extract_client_id("💬 Сообщение от клиента Иван (id 987654):\n\nЗдравствуйте") == 987654,
+    )
+    check("id из подписи", replies.extract_client_id("(id 555) нужен счёт") == 555)
+    check("без id — None", replies.extract_client_id("просто текст") is None)
+    check("пустое сообщение", replies.extract_client_id(None) is None)
+    check("подсказка про ответ", "/reply" in replies.forward_note())
+    check("текст клиенту", replies.reply_for_client("уже везём").startswith("💬 Менеджер"))
+    check("имя менеджера в тексте", "Азиз" in replies.reply_for_client("уже везём", "Азиз"))
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -2222,6 +2247,7 @@ async def main() -> int:
     test_missing_demand()
     test_habit()
     test_churn_rhythm()
+    test_manager_reply()
     test_golden_live()
     test_module_names()
     await test_db()

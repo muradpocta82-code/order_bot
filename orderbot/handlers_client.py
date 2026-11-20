@@ -43,6 +43,7 @@ from .extras import (
     items_summary,
     parse_edit,
 )
+from .replies import forward_note as reply_note
 from .formatting import (
     esc,
     format_candidates_question,
@@ -483,7 +484,8 @@ async def _handle_client_button(
                     int(manager),
                     f"💬 Сообщение от клиента "
                     f"{message.from_user.full_name}"
-                    f" (id {message.from_user.id}):\n\n{text}",
+                    f" (id {message.from_user.id}):\n\n{text}\n\n"
+                    f"{reply_note()}",
                 )
             except Exception:
                 pass

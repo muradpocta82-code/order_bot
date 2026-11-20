@@ -38,6 +38,7 @@ from .pending import take_pending_costs
 from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
+from . import replies
 from .roles import _is_manager, _manager_ok
 from .summary import today_summary
 from .buylist import as_text as buylist_text, as_xlsx as buylist_xlsx, collect as buylist_collect
@@ -850,6 +851,47 @@ async def cmd_costvoice(
         return
     status = await message.answer("Разбираю цены…")
     await _costs_from_text(message, status, db, settings, catalog, raw)
+
+
+@router.message(Command("reply"))
+async def cmd_reply_client(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Ответ клиенту: /reply ID текст или реплай на пересланное сообщение (C9)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parsed = replies.parse_reply(command.args or "")
+    if parsed is None and message.reply_to_message is not None:
+        client_id = replies.extract_client_id(
+            message.reply_to_message.text or message.reply_to_message.caption
+        )
+        text = (message.text or "").strip()
+        if client_id and text and not text.startswith("/reply"):
+            parsed = (client_id, text[: replies.MAX_REPLY])
+    if parsed is None:
+        await message.answer(
+            "Формат: <code>/reply 12345 Ваш заказ уже собирают</code>\n"
+            "Можно и просто ответить (реплаем) на пересланное сообщение клиента."
+        )
+        return
+    client_id, body = parsed
+    user = await db.get_user(client_id)
+    if user is None:
+        await message.answer(f"Клиент с id {client_id} не найден в базе.")
+        return
+    try:
+        await message.bot.send_message(client_id, replies.reply_for_client(body))
+    except Exception as exc:
+        log.info("Не дошёл ответ клиенту %s: %s", client_id, exc)
+        await message.answer(
+            "Не смог отправить: клиент не писал боту или заблокировал его."
+        )
+        return
+    name = user.get("name") or client_id
+    await message.answer(f"✅ Отправлено клиенту {esc(name)} (id {client_id}).")
 
 
 @router.callback_query(F.data.startswith("chase:"))
