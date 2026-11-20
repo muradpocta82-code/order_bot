@@ -1919,6 +1919,57 @@ class Database:
             "diff": diff,
         }
 
+    async def add_llm_usage(
+        self, day: str, provider: str, calls: int, tokens: int = 0, cost: float = 0.0
+    ) -> None:
+        """Прибавляет расход ИИ к дню и провайдеру (E4)."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO llm_usage(day, provider, calls, tokens, est_cost, updated_at) "
+            "VALUES (%s::date, %s, %s, %s, %s, now()) "
+            "ON CONFLICT(day, provider) DO UPDATE SET "
+            "calls = llm_usage.calls + excluded.calls, "
+            "tokens = llm_usage.tokens + excluded.tokens, "
+            "est_cost = llm_usage.est_cost + excluded.est_cost, "
+            "updated_at = now()",
+            (
+                str(day)[:10],
+                str(provider)[:20],
+                int(calls),
+                int(tokens),
+                round(float(cost), 4),
+            ),
+        )
+        await self.conn.commit()
+
+    async def llm_usage_day(self, day: str) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT provider, calls, tokens, est_cost FROM llm_usage WHERE day = %s::date",
+            (str(day)[:10],),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def llm_usage_range(self, days: int = 7) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT provider, SUM(calls) AS calls, SUM(tokens) AS tokens, "
+            "SUM(est_cost) AS est_cost FROM llm_usage "
+            "WHERE day >= current_date - %s::int GROUP BY provider",
+            (int(days),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def count_orders_done(self, days: int = 7) -> int:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM orders WHERE status = 'done' "
+            "AND created_at >= now() - (%s || ' days')::interval",
+            (int(days),),
+        )
+        row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
+
     async def set_sub_rule(
         self, catalog_id: int, mode: str, substitute_id: int | None = None
     ) -> None:

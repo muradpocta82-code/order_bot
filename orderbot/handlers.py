@@ -1103,6 +1103,25 @@ async def cmd_price_undo(
     )
 
 
+async def _ai_usage_line(db: Database, ai: AIClient, settings: Settings) -> str:
+    """Строка «ИИ за сутки: N вызовов, ~$X» для /health (E4)."""
+    try:
+        from .aicost import estimate, usage_line
+
+        today = datetime.now(settings.timezone).date().isoformat()
+        rows = await db.llm_usage_day(today)
+        calls = sum(int(row.get("calls") or 0) for row in rows)
+        cost = sum(float(row.get("est_cost") or 0) for row in rows)
+        calls = max(calls, sum(int(v) for v in ai.calls_today.values()))
+        cost = max(cost, estimate(calls, getattr(settings, "llm_cost_per_call", 0.002)))
+        budget = int(getattr(settings, "llm_daily_budget", 0) or 0)
+        return "\n" + usage_line(calls, cost, budget) + (
+            f"\nЗаблокировано по бюджету: {ai.budget_blocked}" if ai.budget_blocked else ""
+        )
+    except Exception:
+        return ""
+
+
 @router.message(Command("health"))
 async def cmd_health(
     message: Message, db: Database, settings: Settings, ai: AIClient
@@ -1158,6 +1177,7 @@ async def cmd_health(
         f"Размер БД: {size / 1024 / 1024:.1f} МБ\n"
         f"Вызовов AI за сутки: DeepSeek {ai.calls_today.get('deepseek', 0)}, "
         f"Gemini {ai.calls_today.get('gemini', 0)}"
+        + await _ai_usage_line(db, ai, settings)
     )
     await message.answer(text, reply_markup=manager_back_keyboard())
 

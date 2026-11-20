@@ -1259,6 +1259,18 @@ async def test_stock_db() -> None:
         check("выключено — не списывает", consumed_off == 0)
         await db.set_setting(st.SALES_KEY, "1")
 
+        await db.add_llm_usage("2026-11-20", "gemini", 5, 0, 0.01)
+        await db.add_llm_usage("2026-11-20", "gemini", 5, 0, 0.01)
+        await db.add_llm_usage("2026-11-20", "deepseek", 3, 0, 0.006)
+        day_rows = await db.llm_usage_day("2026-11-20")
+        total_calls = sum(int(r["calls"]) for r in day_rows)
+        check("расход ИИ накапливается", total_calls == 13, str(day_rows))
+        gemini = next(r for r in day_rows if r["provider"] == "gemini")
+        check("две записи сложились", int(gemini["calls"]) == 10, str(gemini))
+        check("оценка стоимости", abs(float(gemini["est_cost"]) - 0.02) < 0.0001, str(gemini))
+        check("расход за период читается", isinstance(await db.llm_usage_range(30), list))
+        check("заказов за период считаются", isinstance(await db.count_orders_done(7), int))
+
         await db.set_sub_rule(2, "no")
         rules = await db.sub_rules()
         check("правило замены записано", rules.get(2, {}).get("mode") == "no", str(rules))
@@ -1578,6 +1590,29 @@ def test_substitute_rules() -> None:
     check("в списке позиция", item.name in listed, listed)
     check("в списке «не заменять»", "не заменять" in listed, listed)
     check("в списке замена", item.name in listed and "заменять на" in listed, listed)
+
+
+def test_ai_cost() -> None:
+    print("\n[расход ИИ: оценка, бюджет, отчёты]")
+    from orderbot import aicost as ac
+
+    check("оценка по вызовам", ac.estimate(10, 0.002) == 0.02, str(ac.estimate(10, 0.002)))
+    check("ноль вызовов", ac.estimate(0) == 0.0)
+    check("мусор в цене — берём умолчание", ac.estimate(5, "abc") == round(5 * ac.DEFAULT_COST_PER_CALL, 4))
+    check("отрицательные вызовы", ac.estimate(-5) == 0.0)
+    check("доля бюджета", ac.budget_share(80, 100) == 0.8, str(ac.budget_share(80, 100)))
+    check("бюджет не задан — ноль", ac.budget_share(80, 0) == 0.0)
+    check("перерасход не больше 1", ac.budget_share(300, 100) == 1.0)
+    warn = ac.budget_warning(80, 100, 0.16)
+    check("предупреждение про бюджет", "80 из 100" in warn and "LLM_DAILY_BUDGET" in warn, warn)
+    line = ac.usage_line(42, 0.084, 1000)
+    check("строка расхода", "42 вызовов" in line and "0.08" in line, line)
+    check("строка без лимита", "лимит" not in ac.usage_line(5, 0.01))
+    check("на заказ", ac.per_order(0.4, 8) == 0.05, str(ac.per_order(0.4, 8)))
+    check("на заказ без заказов", ac.per_order(0.4, 0) == 0.0)
+    week = ac.weekly_line([{"calls": 100, "est_cost": 0.2}, {"calls": 50, "est_cost": 0.1}], 25)
+    check("недельная строка", "150 вызовов" in week and "0.30" in week, week)
+    check("без вызовов строка пустая", ac.weekly_line([], 10) == "")
 
 
 async def test_db() -> None:
@@ -2359,6 +2394,7 @@ async def main() -> int:
     test_staff_ratings()
     test_payer_role()
     test_substitute_rules()
+    test_ai_cost()
     test_golden_live()
     test_module_names()
     await test_db()

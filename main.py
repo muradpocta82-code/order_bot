@@ -52,6 +52,11 @@ from orderbot.keyboards import (
 )
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
+from orderbot.aicost import WARN_SHARE as ai_warn_share
+from orderbot.aicost import budget_share as ai_budget_share
+from orderbot.aicost import budget_warning as ai_budget_warning
+from orderbot.aicost import estimate as ai_cost_estimate
+from orderbot.aicost import weekly_line as ai_weekly_line
 from orderbot.churn import alert_text as churn_alert_text
 from orderbot.payer import debt_text as payer_debt_text
 from orderbot.staffrating import overall_line as staff_rating_line
@@ -769,6 +774,39 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _llm_usage_loop(
+    bot: Bot, db: Database, settings: Settings, ai: AIClient
+) -> None:
+    """Раз в 15 минут пишет расход ИИ в базу и предупреждает о бюджете (E4)."""
+    manager = settings.manager_chat_id
+    written: dict[str, int] = {}
+    while True:
+        try:
+            today = datetime.now(settings.timezone).date().isoformat()
+            total = 0
+            for provider, calls in ai.calls_today.items():
+                delta = int(calls) - written.get(provider, 0)
+                if delta > 0:
+                    await db.add_llm_usage(
+                        today, provider, delta, 0, ai_cost_estimate(delta, settings)
+                    )
+                    written[provider] = int(calls)
+                total += int(calls)
+            budget = int(getattr(settings, "llm_daily_budget", 0) or 0)
+            if manager is not None and budget:
+                key = f"llm_budget_warned:{today}"
+                share = ai_budget_share(total, budget)
+                if share >= ai_warn_share() and await db.get_setting(key) != "1":
+                    await db.set_setting(key, "1")
+                    await bot.send_message(
+                        int(manager),
+                        ai_budget_warning(total, budget, ai_cost_estimate(total, settings)),
+                    )
+        except Exception as exc:
+            log.warning("Не удалось записать расход ИИ: %s", exc)
+        await asyncio.sleep(15 * 60)
+
+
 async def _habit_loop(
     bot: Bot, db: Database, settings: Settings, catalog: Catalog
 ) -> None:
@@ -974,6 +1012,14 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
             dropped=len(dropped),
         )
     )
+    try:
+        ai_line = ai_weekly_line(
+            await db.llm_usage_range(7), await db.count_orders_done(7)
+        )
+        if ai_line:
+            extra.append(ai_line)
+    except Exception as exc:
+        log.warning("Не удалось собрать расход ИИ для отчёта: %s", exc)
     try:
         extra.extend(staff_rating_block(await db.staff_ratings(7)))
         extra.append(staff_rating_line(await db.order_ratings(7)))
@@ -1337,6 +1383,9 @@ async def run() -> int:
     )
     habit_task = asyncio.create_task(
         _habit_loop(bot, db, settings, catalog), name="habit-nudges"
+    )
+    llm_usage_task = asyncio.create_task(
+        _llm_usage_loop(bot, db, settings, ai), name="llm-usage"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"

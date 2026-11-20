@@ -89,6 +89,7 @@ class Settings:
     local_first: bool = True
     llm_daily_budget: int = 0
     llm_user_hourly: int = 0
+    llm_cost_per_call: float = 0.002
 
     @property
     def ton_enabled(self) -> bool:
@@ -139,4 +140,5 @@ def load_settings() -> Settings:
         local_first=_str("LOCAL_FIRST", "1") not in ("0", "false", "no", "off"),
         llm_daily_budget=_int("LLM_DAILY_BUDGET", 0) or 0,
         llm_user_hourly=_int("LLM_USER_HOURLY", 0) or 0,
+        llm_cost_per_call=_float("LLM_COST_PER_CALL", 0.002),
     )
