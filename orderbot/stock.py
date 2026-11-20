@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .catalog import Catalog
+from .units import canon_unit
 from .units import format_qty, plural
 
 WARN_KEY = "stock_warn_threshold"
@@ -112,6 +113,60 @@ def writeoff_effect(row: StockRow | None, unit: str) -> str:
     if row.left is None:
         return "остаток не менял: в прайсе не заполнен"
     return ""
+
+
+SALES_KEY = "stock_consume_sales"
+
+
+def units_match(left, right) -> bool:
+    """Совпадают ли единицы, чтобы менять остаток (кг/кг — да, уп/кг — нет)."""
+    raw_left = str(left or "").strip().lower()
+    raw_right = str(right or "").strip().lower()
+    if not raw_left or not raw_right:
+        return True  # единица не указана — считаем как в прайсе
+    one = canon_unit(raw_left)
+    two = canon_unit(raw_right)
+    if one and two:
+        return one == two
+    return raw_left == raw_right
+
+
+async def consume_order(db, catalog: Catalog, order: dict) -> tuple[int, list[str]]:
+    """Списывает остатки по доставленному заказу (G6, продолжение).
+
+    Возвращает (сколько позиций списано, заметки для журнала). Если позиция
+    заказана в другой единице, остаток не трогаем — единицы не пересчитываем.
+    """
+    if (await db.get_setting(SALES_KEY, "1")) != "1":
+        return 0, []
+    rows = await current(catalog, db)
+    consumed = 0
+    notes: list[str] = []
+    for item in order.get("items") or []:
+        catalog_id = item.get("catalog_id")
+        if not catalog_id:
+            continue
+        catalog_item = catalog.get(int(catalog_id))
+        if catalog_item is None:
+            continue
+        try:
+            qty = float(item.get("qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        if not units_match(item.get("unit"), catalog_item.unit):
+            notes.append(
+                f"{catalog_item.name}: «{item.get('unit')}» ≠ «{catalog_item.unit}» — остаток не менял"
+            )
+            continue
+        row = rows.get(int(catalog_id))
+        before = float(row.left) if row and row.left is not None else None
+        left = await db.adjust_stock(int(catalog_id), -qty, base=catalog_item.stock)
+        consumed += 1
+        was = f"{before:g} → " if before is not None else ""
+        notes.append(f"{catalog_item.name}: {was}{left:g} {catalog_item.unit}")
+    return consumed, notes
 
 
 async def threshold(db) -> float:

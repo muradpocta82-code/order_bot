@@ -1172,6 +1172,13 @@ def test_stock() -> None:
     check("нет позиции — предупреждение",
           "нет в прайсе" in st.writeoff_effect(None, "кг"))
 
+    from orderbot.stock import units_match
+
+    check("единицы совпадают", units_match("кг", "кг"))
+    check("синоним единицы", units_match("кг.", "килограмм"))
+    check("упаковка и кг не совпадают", not units_match("уп", "кг"))
+    check("пустая единица не мешает", units_match(None, "кг"))
+
     from orderbot.formatting import format_catalog
 
     shown = format_catalog(catalog, {tomatoes.id})
@@ -1228,6 +1235,29 @@ async def test_stock_db() -> None:
         check("разные клиенты", int(digest[0]["users"]) == 2, str(digest[0]))
         askers = await db.missing_askers("трюфель", 60)
         check("кто просил", sorted(askers) == [11, 12], str(askers))
+
+        await db.set_item_available(item.id, True, 20.0)
+        fake_order = {
+            "id": 999,
+            "items": [
+                {"catalog_id": item.id, "qty": 5, "unit": item.unit},
+                {"catalog_id": item.id, "qty": 2, "unit": "ящик"},
+                {"catalog_id": None, "qty": 1, "unit": item.unit},
+            ],
+        }
+        consumed, notes = await st.consume_order(db, catalog, fake_order)
+        check("списана одна позиция", consumed == 1, f"{consumed} {notes}")
+        rows_now = await st.current(catalog, db)
+        check(
+            "остаток уменьшился",
+            abs(float(rows_now[item.id].left or 0) - 15.0) < 0.001,
+            str(rows_now[item.id].left),
+        )
+        check("другая единица в заметках", any("ящик" in note for note in notes), str(notes))
+        await db.set_setting(st.SALES_KEY, "0")
+        consumed_off, _notes = await st.consume_order(db, catalog, fake_order)
+        check("выключено — не списывает", consumed_off == 0)
+        await db.set_setting(st.SALES_KEY, "1")
 
         days = await db.client_order_days(120)
         check("дни заказов читаются", isinstance(days, list))

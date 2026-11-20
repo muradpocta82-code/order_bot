@@ -274,6 +274,34 @@ async def cmd_income(
     await message.answer(text)
 
 
+@router.message(Command("stock"))
+async def cmd_stock_consume(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Списывать ли остатки при доставке заказа (G6)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg in ("off", "0", "выкл", "нет"):
+        await db.set_setting("stock_consume_sales", "0")
+        await message.answer(
+            "Остатки при доставке больше не списываются — правьте их /income и /writeoff."
+        )
+        return
+    if arg in ("on", "1", "вкл", "да"):
+        await db.set_setting("stock_consume_sales", "1")
+        await message.answer(
+            "Остатки списываются автоматически, когда курьер нажимает «Доставлено»."
+        )
+        return
+    enabled = await db.get_setting("stock_consume_sales", "1") == "1"
+    await message.answer(
+        f"Списание остатков при доставке: {'включено' if enabled else 'выключено'}.\n"
+        "Включить: /stock on · выключить: /stock off\n"
+        "Пополнение: /income · списание брака: /writeoff · что заканчивается: /lowstock"
+    )
+
+
 @router.message(Command("habit"))
 async def cmd_habit(
     message: Message, command: CommandObject, db: Database, settings: Settings

@@ -16,7 +16,9 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
+from .catalog import Catalog
 from .config import Settings
+from .stock import consume_order
 from .db import Database
 from .formatting import esc, format_order, money
 from .route import maps_link, plan as route_plan, total_distance_km
@@ -188,7 +190,7 @@ async def cb_courier_pay(
 
 @router.callback_query(F.data.startswith("cour:done:"))
 async def cb_courier_done(
-    callback: CallbackQuery, db: Database, settings: Settings
+    callback: CallbackQuery, db: Database, settings: Settings, catalog: Catalog
 ) -> None:
     if not await _courier_ok(callback, settings):
         return
@@ -220,6 +222,17 @@ async def cb_courier_done(
         return
     order = await db.get_order(order_id)
     assert order is not None
+    try:
+        consumed, stock_notes = await consume_order(db, catalog, order)
+        if consumed:
+            log.info(
+                "Остатки по заказу №%s списаны: %s поз. (%s)",
+                order_id,
+                consumed,
+                "; ".join(stock_notes[:4]),
+            )
+    except Exception as exc:
+        log.warning("Не удалось списать остатки по заказу №%s: %s", order_id, exc)
     await _edit_courier_card(callback, order, "✅ Доставлено", None)
     manager = _manager_chat(settings)
     await _drop_card_buttons(
