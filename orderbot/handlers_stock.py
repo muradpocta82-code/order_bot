@@ -16,6 +16,14 @@ from .catalog import Catalog
 from .config import Settings
 from .db import Database
 from .formatting import esc, format_missing, format_quality, money
+from .stock import (
+    WARN_KEY,
+    current as current_stock,
+    low_stock,
+    low_stock_text,
+    threshold,
+    writeoff_effect,
+)
 from .keyboards import manager_back_keyboard
 from .roles import _is_manager
 
@@ -151,6 +159,12 @@ async def cmd_writeoff(
         message.from_user.id,
     )
     value = (float(cost) * request.qty) if cost is not None else None
+    stock_rows = await current_stock(catalog, db)
+    left_before = stock_rows.get(item.id)
+    note = writeoff_effect(left_before, unit)
+    if not note:
+        left_after = await db.adjust_stock(item.id, -float(request.qty), base=item.stock)
+        note = f"остаток: {left_after:g} {item.unit} (было {float(left_before.left or 0):g})"
     lines = [
         f"🗑 Списано: <b>{esc(item.name)} {request.qty:g} {esc(unit)}</b>"
         + (f" — {esc(request.reason)}" if request.reason else "")
@@ -159,7 +173,33 @@ async def cmd_writeoff(
         lines.append(f"По закупке: {money(value)}")
     else:
         lines.append("⚠️ Закупочная цена неизвестна — задайте её /cost, чтобы видеть потери.")
+    if note:
+        lines.append(f"📦 {note}")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("lowstock"))
+async def cmd_lowstock(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Что заканчивается: /lowstock или /lowstock 10 (сменить порог)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().replace(",", ".")
+    if raw:
+        try:
+            value = max(0.0, round(float(raw), 2))
+        except ValueError:
+            await message.answer("Формат: /lowstock 10 — порог в единицах прайса.")
+            return
+        await db.set_setting(WARN_KEY, f"{value:g}")
+    limit = await threshold(db)
+    rows = low_stock(await current_stock(catalog, db), limit)
+    await message.answer(low_stock_text(rows, limit))
 
 
 @router.message(Command("losses"))

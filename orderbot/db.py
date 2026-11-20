@@ -2406,6 +2406,36 @@ class Database:
         )
         await self.conn.commit()
 
+    async def adjust_stock(
+        self, catalog_id: int, delta: float, base: float | None = None
+    ) -> float:
+        """Меняет остаток позиции (списание, приход). Возвращает новый остаток.
+
+        Если строки в stock_items ещё нет, берём остаток из прайса (`base`).
+        """
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT available, stock_left FROM stock_items WHERE catalog_id = %s",
+            (int(catalog_id),),
+        )
+        row = await cursor.fetchone()
+        available = bool(row["available"]) if row else True
+        if row is not None and row["stock_left"] is not None:
+            current = float(row["stock_left"])
+        else:
+            current = float(base or 0.0)
+        new_left = max(0.0, round(current + float(delta), 3))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            "INSERT INTO stock_items(catalog_id, available, stock_left, updated_at) "
+            "VALUES(%s,%s,%s,%s) "
+            "ON CONFLICT(catalog_id) DO UPDATE SET available = excluded.available, "
+            "stock_left = excluded.stock_left, updated_at = excluded.updated_at",
+            (int(catalog_id), available, new_left, now),
+        )
+        await self.conn.commit()
+        return new_left
+
     async def stock_overrides(self) -> dict[int, dict[str, Any]]:
         assert self.conn is not None
         cursor = await self.conn.execute(

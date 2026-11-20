@@ -17,6 +17,7 @@ from .config import Settings
 from .db import Database
 from .formatting import esc, money
 from .roles import _is_manager, _manager_ok
+from .stock import current as current_stock, hidden_ids
 
 log = logging.getLogger(__name__)
 router = Router(name="orderbot_prices")
@@ -115,7 +116,8 @@ async def cb_pricenew_publish(
         return
     price_review.apply_to_catalog(catalog, prices)
     try:
-        catalog.dump_json(settings.data_dir / "catalog.json")
+        rows = await current_stock(catalog, db)
+        catalog.dump_json(settings.data_dir / "catalog.json", exclude=hidden_ids(rows))
     except Exception as exc:
         log.warning("Не обновил catalog.json для мини-аппа: %s", exc)
     await db.set_setting(price_review.LAST_DONE_KEY, price_review.mark_reviewed_today())

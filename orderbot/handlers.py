@@ -56,6 +56,7 @@ from .extras import (
     parse_edit,
     weekly_report,
 )
+from .stock import hidden_ids, resolve as resolve_stock
 from .formatting import (
     esc,
     format_candidates_question,
@@ -168,6 +169,7 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /order 12 — заказ №12
 /price — прайс
 /missing — чего нет в прайсе
+/lowstock — что заканчивается
 /pricenew — цены на завтра из закупки
 /markup — наценки по категориям
 /quality — качество разбора
@@ -275,7 +277,11 @@ async def _intent_reply(
             client_back_keyboard(),
         )
     if kind == "price":
-        return format_catalog(catalog), _back_keyboard(settings, user_id, chat_id)
+        rows = resolve_stock(catalog, await db.stock_overrides())
+        return (
+            format_catalog(catalog, hidden_ids(rows)),
+            _back_keyboard(settings, user_id, chat_id),
+        )
     if kind == "help":
         return HELP_TEXT, client_back_keyboard()
     if kind in ("status", "cancel"):
@@ -957,8 +963,11 @@ async def cmd_id(message: Message, settings: Settings) -> None:
 
 
 @router.message(Command("price"))
-async def cmd_price(message: Message, catalog: Catalog, settings: Settings) -> None:
-    text = format_catalog(catalog)
+async def cmd_price(
+    message: Message, catalog: Catalog, settings: Settings, db: Database
+) -> None:
+    rows = resolve_stock(catalog, await db.stock_overrides())
+    text = format_catalog(catalog, hidden_ids(rows))
     keyboard = _back_keyboard(settings, message.from_user.id, message.chat.id)
     if len(text) <= 4000:
         await message.answer(text, reply_markup=keyboard)
@@ -1601,7 +1610,7 @@ async def cb_manager_view(
 
 @router.callback_query(F.data == "cl:price")
 async def cb_client_price(
-    callback: CallbackQuery, catalog: Catalog, settings: Settings
+    callback: CallbackQuery, catalog: Catalog, settings: Settings, db: Database
 ) -> None:
     if callback.message is None:
         await callback.answer("Сообщение недоступно", show_alert=True)
@@ -1611,11 +1620,12 @@ async def cb_client_price(
         callback.from_user.id,
         callback.message.chat.id,
     )
+    rows = resolve_stock(catalog, await db.stock_overrides())
     await _edit_panel(
         callback.bot,
         callback.message.chat.id,
         callback.message.message_id,
-        format_catalog(catalog),
+        format_catalog(catalog, hidden_ids(rows)),
         keyboard,
     )
     await callback.answer()

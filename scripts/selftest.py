@@ -1127,6 +1127,86 @@ def test_price_review() -> None:
     check("текст напоминания", "порог" in pr.reminder_text(14, None))
 
 
+def test_stock() -> None:
+    print("\n[остатки: скрытие, порог, списание]")
+    from orderbot import stock as st
+
+    catalog = Catalog.load(BASE_DIR / "catalog.xlsx")
+    tomatoes = next(i for i in catalog.items if i.stock is not None)
+    other = next(i for i in catalog.items if i.id != tomatoes.id)
+    overrides = {tomatoes.id: {"available": True, "stock_left": 0.0}}
+    rows = st.resolve(catalog, overrides)
+    check("нулевой остаток скрыт", tomatoes.id in st.hidden_ids(rows), str(rows[tomatoes.id]))
+    check("остальные видны", other.id not in st.hidden_ids(rows))
+    check("остаток из прайса", rows[other.id].left == other.stock)
+
+    stopped = st.resolve(catalog, {tomatoes.id: {"available": False, "stock_left": 10.0}})
+    check("снятая позиция скрыта", tomatoes.id in st.hidden_ids(stopped))
+    check("снятая не попадает в «заканчивается»",
+          all(r.catalog_id != tomatoes.id for r in st.low_stock(stopped, 50)))
+
+    low = st.resolve(
+        catalog,
+        {tomatoes.id: {"available": True, "stock_left": 2.0},
+         other.id: {"available": True, "stock_left": 0.0}},
+    )
+    rows_low = st.low_stock(low, 5)
+    ids_low = {row.catalog_id for row in rows_low}
+    check("наша позиция на исходе", tomatoes.id in ids_low, str(rows_low))
+    check("обнулённая не на исходе", other.id not in ids_low)
+    check("все строки в пределах порога", all(float(row.left) <= 5 for row in rows_low))
+    check(
+        "узкий порог не пропускает 2 кг",
+        tomatoes.id not in {row.catalog_id for row in st.low_stock(low, 1.0)},
+    )
+    text_low = st.low_stock_text(rows_low, 5)
+    check("название в отчёте", tomatoes.name in text_low, text_low)
+    check("пустой отчёт", "в порядке" in st.low_stock_text([], 5))
+    check("строка для сводки", "Заканчивается" in st.summary_line(rows_low))
+    check("без остатков строка пустая", st.summary_line([]) == "")
+
+    check("списание в другой единице не трогает остаток",
+          "не менял" in st.writeoff_effect(rows[tomatoes.id], "упаковка"))
+    check("списание в той же единице проходит",
+          st.writeoff_effect(rows[tomatoes.id], tomatoes.unit) == "")
+    check("нет позиции — предупреждение",
+          "нет в прайсе" in st.writeoff_effect(None, "кг"))
+
+    from orderbot.formatting import format_catalog
+
+    shown = format_catalog(catalog, {tomatoes.id})
+    check("прайс скрывает позицию", tomatoes.name not in shown, shown[:200])
+    check("прайс сообщает, что есть ещё", "нет в наличии" in shown, shown[-200:])
+    check("без скрытых — все позиции", other.name in format_catalog(catalog))
+
+
+async def test_stock_db() -> None:
+    print("\n[остатки: база и списание]")
+    from orderbot import stock as st
+
+    if not TEST_URL:
+        check("остатки в базе пропущены (нет TEST_DATABASE_URL)", True)
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        await reset_test_database(db)
+        catalog = Catalog.load(BASE_DIR / "catalog.xlsx")
+        item = next(i for i in catalog.items if i.stock is not None)
+        left = await db.adjust_stock(item.id, -3, base=item.stock)
+        check("остаток уменьшился", abs(left - (float(item.stock) - 3)) < 0.001, str(left))
+        await db.set_item_available(item.id, True, 2.0)
+        left = await db.adjust_stock(item.id, -5, base=item.stock)
+        check("остаток не уходит в минус", left == 0.0, str(left))
+        rows = await st.current(catalog, db)
+        check("нулевой скрыт в базе", item.id in st.hidden_ids(rows))
+        await db.set_setting(st.WARN_KEY, "7")
+        check("порог из настроек", await st.threshold(db) == 7.0)
+        await db.set_setting(st.WARN_KEY, "мусор")
+        check("битый порог — по умолчанию", await st.threshold(db) == st.DEFAULT_WARN)
+        await db.close()
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -1897,6 +1977,7 @@ async def main() -> int:
     test_ledger_math()
     test_writeoff()
     test_price_review()
+    test_stock()
     test_golden_live()
     test_module_names()
     await test_db()
@@ -1908,6 +1989,7 @@ async def main() -> int:
     await test_lock_cleanup()
     await test_pending_price()
     await test_ledger_db()
+    await test_stock_db()
     await test_races()
     await test_allowed_middleware()
     print("\n" + "=" * 70)

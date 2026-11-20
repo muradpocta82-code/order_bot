@@ -192,7 +192,7 @@ class Catalog:
             seen.add(norm)
             self._phrases.append((item, norm, lemmatize(norm)))
 
-    def dump_json(self, path: str | Path) -> int:
+    def dump_json(self, path: str | Path, exclude: set[int] | None = None) -> int:
         """Пишет прайс в JSON: мини-апп читает его вместо Excel (G4).
 
         Возвращает число позиций. Запись атомарная: сначала .tmp, потом rename,
@@ -213,6 +213,7 @@ class Catalog:
                     "stock": item.stock,
                 }
                 for item in self.items
+                if not exclude or item.id not in exclude
             ],
         }
         tmp = path.with_suffix(path.suffix + ".tmp")

@@ -45,6 +45,14 @@ from orderbot.keyboards import (
 )
 from orderbot.pricecast import send_morning_prices
 from orderbot import pricereview as price_review
+from orderbot.stock import (
+    current as stock_current,
+    hidden_ids,
+    low_stock as stock_low,
+    resolve as resolve_stock,
+    summary_line as stock_summary_line,
+    threshold as stock_threshold,
+)
 from orderbot.pending import purge_pending_prices
 from orderbot.quiet import bind as bind_quiet, flush_queue
 from orderbot.stt import Transcriber
@@ -366,11 +374,13 @@ async def _run_maintenance(db: Database) -> None:
         log.info("VACUUM базы выполнен")
 
 
-def _dump_catalog_json(catalog: Catalog, settings: Settings) -> None:
+def _dump_catalog_json(
+    catalog: Catalog, settings: Settings, hidden: set[int] | None = None
+) -> None:
     """Отдаёт прайс мини-аппу в JSON: он больше не читает Excel (G4)."""
     target = settings.data_dir / "catalog.json"
     try:
-        count = catalog.dump_json(target)
+        count = catalog.dump_json(target, exclude=hidden)
         log.info("Каталог для мини-аппа: %s позиций → %s", count, target)
     except Exception as exc:
         log.warning("Не удалось записать %s: %s", target, exc)
@@ -403,7 +413,12 @@ async def _maintenance_loop(
         except Exception as exc:
             log.warning("Ошибка уборки подтверждений прайса: %s", exc)
         if catalog is not None and _catalog_json_stale(catalog, settings):
-            _dump_catalog_json(catalog, settings)
+            hidden: set[int] | None = None
+            try:
+                hidden = hidden_ids(resolve_stock(catalog, await db.stock_overrides()))
+            except Exception as exc:
+                log.warning("Не удалось учесть остатки в каталоге: %s", exc)
+            _dump_catalog_json(catalog, settings, hidden)
 
 
 async def _resend_unnotified(bot: Bot, db: Database, settings: Settings) -> None:
@@ -693,7 +708,9 @@ async def _price_review_loop(
         await asyncio.sleep(6 * 3600)
 
 
-async def _morning_summary(bot: Bot, db: Database, settings: Settings) -> bool:
+async def _morning_summary(
+    bot: Bot, db: Database, settings: Settings, catalog: Catalog | None = None
+) -> bool:
     """Сводка «что горит» владельцу каждое утро, один раз в день."""
     manager = settings.manager_chat_id
     if manager is None:
@@ -706,15 +723,26 @@ async def _morning_summary(bot: Bot, db: Database, settings: Settings) -> bool:
         return False
     await db.set_setting("last_morning_summary", today)
     text = await today_summary(db, settings)
+    if catalog is not None:
+        try:
+            limit = await stock_threshold(db)
+            rows = stock_low(await stock_current(catalog, db), limit)
+            line = stock_summary_line(rows)
+            if line:
+                text = f"{text}\n\n{line}"
+        except Exception as exc:
+            log.warning("Не удалось посчитать остатки в сводке: %s", exc)
     await bot.send_message(int(manager), text)
     log.info("Утренняя сводка отправлена")
     return True
 
 
-async def _morning_loop(bot: Bot, db: Database, settings: Settings) -> None:
+async def _morning_loop(
+    bot: Bot, db: Database, settings: Settings, catalog: Catalog | None = None
+) -> None:
     while True:
         try:
-            await _morning_summary(bot, db, settings)
+            await _morning_summary(bot, db, settings, catalog)
         except Exception as exc:
             log.warning("Ошибка утренней сводки: %s", exc)
         await asyncio.sleep(15 * 60)
@@ -1083,6 +1111,7 @@ async def run() -> int:
                         BotCommand(command="order", description="Заказ"),
                         BotCommand(command="price", description="Прайс"),
                         BotCommand(command="missing", description="Нет в прайсе"),
+                        BotCommand(command="lowstock", description="Заканчивается"),
                         BotCommand(command="quality", description="Качество разбора"),
                         BotCommand(command="health", description="Здоровье"),
                         BotCommand(command="today", description="Сводка дня"),
@@ -1134,7 +1163,7 @@ async def run() -> int:
         _evening_loop(bot, db, settings), name="evening-summary"
     )
     morning_task = asyncio.create_task(
-        _morning_loop(bot, db, settings), name="morning-summary"
+        _morning_loop(bot, db, settings, catalog), name="morning-summary"
     )
     debt_task = asyncio.create_task(
         _debt_reminder_loop(bot, db, settings), name="debt-reminders"

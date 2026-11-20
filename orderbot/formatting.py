@@ -308,10 +308,16 @@ def format_qty_question(item: dict[str, Any]) -> str:
     return f"Сколько нужно: <b>{esc(name)}</b>{suffix}?"
 
 
-def format_catalog(catalog: Catalog) -> str:
+def format_catalog(catalog: Catalog, hidden: set[int] | None = None) -> str:
+    """Прайс для клиента: позиции без остатка и снятые с продажи скрываем (G6)."""
+    hidden = hidden or set()
     lines = ["📋 <b>Наш список</b>", ""]
     current_category = None
+    skipped = 0
     for item in catalog.items:
+        if item.id in hidden:
+            skipped += 1
+            continue
         category = item.category or "Прочее"
         if category != current_category:
             if current_category is not None:
@@ -321,6 +327,9 @@ def format_catalog(catalog: Catalog) -> str:
         lines.append(
             f"• {esc(item.name)} ({esc(item.pack)}) — {money(item.price)}/{esc(item.unit)}"
         )
+    if skipped:
+        lines.append("")
+        lines.append(f"Ещё {skipped} поз. сейчас нет в наличии — спросите менеджера.")
     return "\n".join(lines)
 
 
