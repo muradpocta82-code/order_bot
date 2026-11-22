@@ -2391,6 +2391,88 @@ async def test_forecast_db() -> None:
             await db.close()
 
 
+def test_receipts() -> None:
+    print("\n[проверка чека по фото (G3)]")
+    from orderbot.receipts import parse_receipt, short_text, verdict
+
+    parsed = parse_receipt({"amount": "1 200,50", "currency": "usd",
+                            "date": "2026-11-22T10:00:00", "merchant": " ООО  Ромашка "})
+    check("сумма с пробелом и запятой", parsed["amount"] == 1200.5, str(parsed))
+    check("валюта в верхнем регистре", parsed["currency"] == "USD", str(parsed))
+    check("дата обрезана до дня", parsed["date"] == "2026-11-22", str(parsed))
+    check("получатель без лишних пробелов", parsed["merchant"] == "ООО Ромашка", str(parsed))
+    check("пустой ответ", parse_receipt(None)["amount"] is None)
+    check("мусор в сумме", parse_receipt({"amount": "abc"})["amount"] is None)
+    check("отрицательная сумма не считается", parse_receipt({"amount": -5})["amount"] is None)
+
+    check("сумма совпала", verdict({"amount": 100.0}, 100.0) == "match")
+    check("в пределах процента", verdict({"amount": 100.5}, 100.0) == "match")
+    check("чужая сумма", verdict({"amount": 120.0}, 100.0) == "mismatch")
+    check("суммы нет", verdict({"amount": None}, 100.0) == "unknown")
+    check("заказ пустой", verdict({"amount": 10.0}, 0) == "unknown")
+
+    text = short_text({"amount": 100.0, "currency": "USD", "date": "2026-11-22",
+                       "merchant": "Ромашка"}, 100.0)
+    check("в тексте сумма и заказ", "100.0" in text and "дата" in text, text)
+    check("в тексте получатель", "Ромашка" in text, text)
+
+
+async def test_receipts_db() -> None:
+    print("\n[проверки чеков в базе (G3)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9801
+            await db.ensure_user(client, "Чек Тест")
+            order_id = await db.create_order(
+                {
+                    "id": "rc-1",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 1,
+                  "unit": "кг", "price": 100.0, "total": 100.0}],
+                None,
+            )
+            check("проверок ещё нет", await db.latest_receipt_check(order_id) is None)
+            check_id = await db.save_receipt_check(
+                order_id,
+                client,
+                {"amount": 120.0, "currency": "USD", "date": "2026-11-22",
+                 "merchant": "Ромашка"},
+                "mismatch",
+            )
+            check("проверка записана", check_id > 0, str(check_id))
+            saved = await db.latest_receipt_check(order_id)
+            check(
+                "сумма и вердикт сохранены",
+                saved is not None and float(saved["amount"]) == 120.0
+                and saved["verdict"] == "mismatch",
+                str(saved),
+            )
+            await db.save_receipt_check(
+                order_id, client, {"amount": 100.0}, "match"
+            )
+            latest = await db.latest_receipt_check(order_id)
+            check(
+                "последняя проверка — свежая",
+                latest is not None and latest["verdict"] == "match",
+                str(latest),
+            )
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3339,6 +3421,8 @@ async def main() -> int:
     await test_shadow_db()
     test_forecast()
     await test_forecast_db()
+    test_receipts()
+    await test_receipts_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

@@ -1121,6 +1121,48 @@ class Database:
             "exact": int(row.get("exact") or 0),
         }
 
+    async def save_receipt_check(
+        self,
+        order_id: int,
+        chef_id: int | None,
+        receipt: dict[str, Any],
+        verdict: str,
+        provider: str = "",
+    ) -> int:
+        """Записывает проверку чека (G3)."""
+        assert self.conn is not None
+        import json as _json
+
+        cursor = await self.conn.execute(
+            "INSERT INTO receipt_checks(order_id, chef_id, amount, currency, "
+            "receipt_date, verdict, provider, raw) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING id",
+            (
+                int(order_id),
+                int(chef_id) if chef_id else None,
+                receipt.get("amount"),
+                str(receipt.get("currency") or "")[:8] or None,
+                str(receipt.get("date") or "")[:10] or None,
+                str(verdict)[:20],
+                str(provider or "")[:40],
+                _json.dumps(receipt, ensure_ascii=False),
+            ),
+        )
+        row = await cursor.fetchone()
+        await self.conn.commit()
+        return int(row["id"])
+
+    async def latest_receipt_check(self, order_id: int) -> dict[str, Any] | None:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, order_id, chef_id, amount, currency, receipt_date, verdict, "
+            "provider, created_at FROM receipt_checks WHERE order_id = %s "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (int(order_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def weekday_history(
         self, days: int = 56
     ) -> dict[int, list[dict[str, Any]]]:

@@ -75,6 +75,8 @@ from .formatting import (
     split_message,
 )
 from .locations import choice_text as location_choice_text
+from .receipts import short_text as receipts_short
+from .receipts import verdict as receipts_verdict
 from .keyboards import (
     problem_keyboard,
     alt_keyboard,
@@ -99,6 +101,7 @@ from .keyboards import (
     date_shift_keyboard,
     edit_confirm_keyboard,
     manager_panel_keyboard,
+    receipt_confirm_keyboard,
     manager_back_keyboard,
     manager_status_keyboard,
     order_detail_keyboard,
@@ -2998,6 +3001,25 @@ async def cmd_staff_del(
 # H4: фото подтверждения (ответом на карточку заказа)
 # ---------------------------------------------------------------------------
 @router.message(F.photo)
+async def _read_receipt_photo(bot, photo, ai) -> dict | None:
+    """Скачивает фото и просит модель прочитать чек (G3)."""
+    from io import BytesIO
+
+    from .receipts import parse_receipt
+
+    try:
+        buffer = BytesIO()
+        await bot.download(photo, destination=buffer)
+        data = await ai.read_receipt(buffer.getvalue(), "image/jpeg")
+    except Exception:
+        log.info("Не удалось прочитать чек по фото", exc_info=True)
+        return None
+    if not data:
+        return None
+    return parse_receipt(data)
+
+
+@router.message(F.photo)
 async def on_photo(
     message: Message,
     db: Database,
@@ -3015,17 +3037,69 @@ async def on_photo(
         if order is not None:
             photo = message.photo[-1]
             await db.set_order_photo(int(order["id"]), photo.file_id)
-            await db.mark_order_paid(
-                int(order["id"]), "transfer", float(order.get("total") or 0)
-            )
-            fresh = await db.get_order(int(order["id"])) or order
             manager = order.get("manager_chat_id") or settings.manager_chat_id
+            total = float(order.get("total") or 0)
+            # G3: пробуем прочитать сумму чека и сверить с заказом.
+            receipt = await _read_receipt_photo(message.bot, photo, ai)
+            check_verdict = receipts_verdict(receipt, total) if receipt else "unknown"
+            if receipt:
+                await db.save_receipt_check(
+                    int(order["id"]),
+                    message.from_user.id,
+                    receipt,
+                    check_verdict,
+                )
+            if check_verdict == "match":
+                amount = float(receipt["amount"])
+                await db.mark_order_paid(int(order["id"]), "transfer", amount)
+                if manager:
+                    try:
+                        await message.bot.send_photo(
+                            int(manager),
+                            photo.file_id,
+                            caption=(
+                                f"🏦 Чек по заказу №{order['id']} — "
+                                f"перевод зафиксирован ({receipts_short(receipt, total)})."
+                            ),
+                        )
+                    except Exception:
+                        pass
+                await message.answer(
+                    f"🏦 Чек принят: {money(amount)} — заказ №{order['id']} оплачен."
+                )
+                return
+            if check_verdict == "mismatch":
+                caption = (
+                    f"⚠️ Чек по заказу №{order['id']} не сходится с суммой заказа.\n"
+                    f"{receipts_short(receipt, total)}\n"
+                    "Отметить оплату по чеку?"
+                )
+                if manager:
+                    try:
+                        await message.bot.send_photo(
+                            int(manager),
+                            photo.file_id,
+                            caption=caption,
+                            reply_markup=receipt_confirm_keyboard(int(order["id"])),
+                        )
+                    except Exception:
+                        pass
+                await message.answer(
+                    "Чек отправил менеджеру: сумма не сходится с заказом. "
+                    "Оплата будет отмечена после подтверждения."
+                )
+                return
+            # Сумма не распознана — прежнее поведение: доверяем доставщику.
+            await db.mark_order_paid(int(order["id"]), "transfer", total)
             if manager:
                 try:
                     await message.bot.send_photo(
                         int(manager),
                         photo.file_id,
-                        caption=f"🏦 Чек по заказу №{order['id']} — перевод зафиксирован.",
+                        caption=(
+                            f"🏦 Чек по заказу №{order['id']} — перевод зафиксирован "
+                            "(сумма не распознана, отмечено по сумме заказа)."
+                        ),
                     )
                 except Exception:
                     pass
@@ -3123,6 +3197,43 @@ async def cb_courier_transfer(
         "Пришлите фото чека — отмечу оплату переводом."
     )
     await callback.answer("Жду фото чека")
+
+
+@router.callback_query(F.data.startswith("rcpt:"))
+async def cb_receipt_decision(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Менеджер подтверждает оплату по чеку с другой суммой (G3)."""
+    if not await _manager_ok(callback, settings):
+        return
+    try:
+        _, action, raw_order = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if action == "ok":
+        check = await db.latest_receipt_check(order_id)
+        amount = float((check or {}).get("amount") or order.get("total") or 0)
+        await db.mark_order_paid(order_id, "transfer", amount)
+        text = f"✅ Оплата по чеку отмечена: {money(amount)} (заказ №{order_id})."
+    else:
+        text = (
+            f"❌ Чек по заказу №{order_id} отклонён — оплата не отмечена. "
+            "Доставщику нужно проверить перевод."
+        )
+    try:
+        await callback.message.edit_caption(caption=text)
+    except Exception:
+        try:
+            await callback.message.edit_text(text)
+        except Exception:
+            pass
+    await callback.answer("Записал")
 
 
 @router.callback_query(F.data.startswith("prob:"))

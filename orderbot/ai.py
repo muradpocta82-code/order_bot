@@ -684,6 +684,38 @@ class AIClient:
                     break
         return None
 
+    async def read_receipt(self, image: bytes, mime_type: str = "image/jpeg"):
+        """Читает чек/скриншот перевода и возвращает разобранные поля (G3)."""
+        if not self.gemini_enabled or self._gemini is None:
+            return None
+        from .receipts import RECEIPT_PROMPT
+
+        self._count_call("gemini")
+        try:
+            image_part = genai_types.Part.from_bytes(data=image, mime_type=mime_type)
+        except Exception:
+            image_part = genai_types.Part(
+                inline_data=genai_types.Blob(data=image, mime_type=mime_type)
+            )
+        for model in self._gemini_models():
+            try:
+                response = await asyncio.wait_for(
+                    self._gemini.aio.models.generate_content(
+                        model=model,
+                        contents=[RECEIPT_PROMPT, image_part],
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0, max_output_tokens=400
+                        ),
+                    ),
+                    timeout=60,
+                )
+            except Exception as exc:
+                self._gemini_failure(model, exc, "чек")
+                continue
+            self._gemini_success(model)
+            return _extract_json(getattr(response, "text", None))
+        return None
+
     async def transcribe_audio(self, audio: bytes, mime_type: str = "audio/ogg") -> str | None:
         if not self.gemini_enabled or self._gemini is None:
             return None

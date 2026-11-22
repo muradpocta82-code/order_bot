@@ -366,6 +366,22 @@ def feedback_keyboard(order_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def receipt_confirm_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Менеджер решает, считать ли чек оплатой (G3)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Да, оплачено", callback_data=f"rcpt:ok:{order_id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Нет", callback_data=f"rcpt:no:{order_id}"
+                ),
+            ]
+        ]
+    )
+
+
 def edit_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
