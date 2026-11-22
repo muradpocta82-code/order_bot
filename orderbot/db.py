@@ -652,8 +652,9 @@ class Database:
             cursor = await self.conn.execute(
                 "INSERT INTO orders(created_at, chef_id, chef_name, chef_username, manager_chat_id, "
                 "delivery_date, delivery_time, comment, total, status, source, raw_text, questions, "
-                "delivery_address, delivery_phone, payment_method, payment_status, delivery_pin) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)" + add_id,
+                "delivery_address, delivery_phone, payment_method, payment_status, delivery_pin, "
+                "location_id, location_name) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)" + add_id,
                 (
                     created_at,
                     int(draft["user_id"]),
@@ -673,6 +674,8 @@ class Database:
                     draft.get("payment_method") or "cash",
                     "unpaid",
                     f"{secrets.randbelow(9000) + 1000}",
+                    int(draft["location_id"]) if draft.get("location_id") else None,
+                    draft.get("location_name"),
                 ),
             )
             if self.is_postgres:
@@ -1606,6 +1609,85 @@ class Database:
     # ------------------------------------------------------------------
     # цены и скидки по клиентам (B13)
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # точки клиента (C11)
+    # ------------------------------------------------------------------
+    async def add_location(
+        self, client_id: int, name: str, address: str = "", payer_id: int | None = None
+    ) -> int:
+        """Добавляет точку клиента; одинаковое название — обновляет адрес."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "INSERT INTO locations(client_id, name, address, payer_id) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (client_id, lower(name)) "
+            "DO UPDATE SET address = EXCLUDED.address, "
+            "payer_id = COALESCE(EXCLUDED.payer_id, locations.payer_id) RETURNING id",
+            (
+                int(client_id),
+                name[:80],
+                (address or "")[:200],
+                int(payer_id) if payer_id else None,
+            ),
+        )
+        row = await cursor.fetchone()
+        await self.conn.commit()
+        return int(row["id"])
+
+    async def client_locations(self, client_id: int) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, client_id, name, address, lat, lon, payer_id, created_at "
+            "FROM locations WHERE client_id = %s ORDER BY name",
+            (int(client_id),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_location(self, location_id: int) -> dict[str, Any] | None:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, client_id, name, address, lat, lon, payer_id, created_at "
+            "FROM locations WHERE id = %s",
+            (int(location_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def delete_location(self, client_id: int, location_id: int) -> bool:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "DELETE FROM locations WHERE id = %s AND client_id = %s",
+            (int(location_id), int(client_id)),
+        )
+        await self.conn.commit()
+        return cursor.rowcount == 1
+
+    async def set_location_payer(self, location_id: int, payer_id: int | None) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "UPDATE locations SET payer_id = %s WHERE id = %s",
+            (int(payer_id) if payer_id else None, int(location_id)),
+        )
+        await self.conn.commit()
+
+    async def location_stats(
+        self, client_id: int, days: int = 30
+    ) -> list[dict[str, Any]]:
+        """Точки клиента с числом заказов и выручкой за период."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT l.id, l.name, l.address, COUNT(o.id) AS orders, "
+            "COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN o.total ELSE 0 END), 0) "
+            "AS revenue "
+            "FROM locations l LEFT JOIN orders o "
+            "  ON o.location_id = l.id AND o.created_at >= %s "
+            "WHERE l.client_id = %s GROUP BY l.id, l.name, l.address ORDER BY l.name",
+            (since, int(client_id)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def client_discount(self, client_id: int) -> dict[str, Any] | None:
         assert self.conn is not None
         cursor = await self.conn.execute(

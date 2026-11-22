@@ -1894,6 +1894,102 @@ async def test_client_pricing_db() -> None:
             await db.close()
 
 
+def test_locations() -> None:
+    print("\n[точки клиента (C11)]")
+    from orderbot.locations import choice_text, list_text, parse_add, pick_by_name
+
+    check(
+        "разбор с чертой",
+        parse_add("Склад Навои | ул. Навои 12") == ("Склад Навои", "ул. Навои 12"),
+        str(parse_add("Склад Навои | ул. Навои 12")),
+    )
+    check("разбор без адреса", parse_add("Бар Центр") == ("Бар Центр", ""))
+    check(
+        "разбор с тире",
+        parse_add("Пиццерия — ул. Амира Темура 5") == ("Пиццерия", "ул. Амира Темура 5"),
+        str(parse_add("Пиццерия — ул. Амира Темура 5")),
+    )
+    check("пустой разбор", parse_add("   ") is None)
+    rows = [
+        {"id": 1, "name": "Склад Навои", "address": "ул. Навои 12"},
+        {"id": 2, "name": "Бар Центр", "address": ""},
+        {"id": 3, "name": "Бар Центр 2", "address": ""},
+    ]
+    check("поиск точного названия", pick_by_name(rows, "Бар Центр")["id"] == 2)
+    check("поиск частью названия", pick_by_name(rows, "навои")["id"] == 1)
+    check("пустой поиск", pick_by_name(rows, "") is None)
+    text = list_text(rows)
+    check("адрес в списке", "ул. Навои 12" in text, text)
+    check("пустой список подсказывает", "/venue_add" in list_text([]))
+    check("вопрос про точку", "Куда везти" in choice_text(), choice_text())
+
+
+async def test_locations_db() -> None:
+    print("\n[точки клиента в базе (C11)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9301
+            await db.ensure_user(client, "Сетевая Сеть")
+            first = await db.add_location(client, "Склад Навои", "ул. Навои 12")
+            second = await db.add_location(client, "Бар Центр", "ул. Амира Темура 5")
+            same = await db.add_location(client, "Склад Навои", "ул. Навои 14")
+            check("повтор названия обновляет точку", same == first, f"{same} vs {first}")
+            rows = await db.client_locations(client)
+            check("две точки у клиента", len(rows) == 2, str(rows))
+            spot = await db.get_location(first)
+            check("адрес обновлён", spot is not None and spot["address"] == "ул. Навои 14", str(spot))
+            order_id = await db.create_order(
+                {
+                    "id": "loc-1",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                    "location_id": second,
+                    "location_name": "Бар Центр",
+                    "delivery_address": "ул. Амира Темура 5",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 2,
+                  "unit": "кг", "price": 9.0, "total": 18.0}],
+                None,
+            )
+            order = await db.get_order(order_id)
+            check(
+                "точка записана в заказ",
+                int(order.get("location_id") or 0) == second
+                and order.get("location_name") == "Бар Центр",
+                str({k: order.get(k) for k in ("location_id", "location_name")}),
+            )
+            stats = await db.location_stats(client, 30)
+            bar = [row for row in stats if int(row["id"]) == second]
+            check(
+                "выручка по точке",
+                bool(bar) and float(bar[0]["revenue"]) == 18.0 and int(bar[0]["orders"]) == 1,
+                str(stats),
+            )
+            check("удаление точки", await db.delete_location(client, second))
+            check("чужую точку не удалить", not await db.delete_location(999999, first))
+            left = await db.client_locations(client)
+            check("осталась одна точка", len(left) == 1, str(left))
+            kept = await db.get_order(order_id)
+            check(
+                "в старом заказе точка осталась",
+                kept.get("location_name") == "Бар Центр",
+                str(kept.get("location_name")),
+            )
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -2832,6 +2928,8 @@ async def main() -> int:
     test_pack_columns()
     test_client_pricing()
     await test_client_pricing_db()
+    test_locations()
+    await test_locations_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

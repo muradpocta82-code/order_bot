@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message, User
 
@@ -25,6 +25,12 @@ from .config import Settings
 from .db import Database
 from .draftprep import _apply_cutoff, _apply_stock, _apply_unit_choice, _apply_units
 from .catalog import diff_catalogs, normalize
+from .locations import (
+    list_text as locations_text,
+    parse_add as parse_location,
+    pick_by_name as pick_location,
+    too_many_text as too_many_locations,
+)
 from .drafts import (
     all_resolved,
     apply_catalog,
@@ -653,6 +659,75 @@ async def _handle_for_client(
         ai=ai,
     )
     return True
+
+
+@router.message(Command("venues"))
+async def cmd_venues(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Точки клиента: /venues — свои, /venues ID — чужие (менеджер, C11)."""
+    raw = (command.args or "").strip()
+    with_money = False
+    client_id = message.from_user.id
+    if raw:
+        if not _is_manager(settings, message.from_user.id, message.chat.id):
+            return
+        if not raw.lstrip("-").isdigit():
+            await message.answer("Формат: <code>/venues ID</code>")
+            return
+        client_id = int(raw)
+        with_money = True
+    rows = (
+        await db.location_stats(client_id, 30)
+        if with_money
+        else await db.client_locations(client_id)
+    )
+    await message.answer(locations_text(rows, with_money=with_money))
+
+
+@router.message(Command("venue_add"))
+async def cmd_venue_add(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Добавить точку: /venue_add Склад Навои | ул. Навои 12 (C11)."""
+    parsed = parse_location(command.args or "")
+    if parsed is None:
+        await message.answer(
+            "Формат: <code>/venue_add Название | адрес</code>\n"
+            "Пример: /venue_add Склад Навои | ул. Навои 12\n"
+            "Адрес можно не указывать."
+        )
+        return
+    name, address = parsed
+    existing = await db.client_locations(message.from_user.id)
+    if len(existing) >= 10:
+        await message.answer(too_many_locations(10))
+        return
+    await db.add_location(message.from_user.id, name, address)
+    rows = await db.client_locations(message.from_user.id)
+    await message.answer(
+        f"🏠 Точка «{esc(name)}» сохранена.\n\n" + locations_text(rows)
+    )
+
+
+@router.message(Command("venue_del"))
+async def cmd_venue_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Удалить точку по названию: /venue_del Склад Навои (C11)."""
+    query = (command.args or "").strip()
+    if not query:
+        await message.answer("Формат: <code>/venue_del Название</code>")
+        return
+    rows = await db.client_locations(message.from_user.id)
+    spot = pick_location(rows, query)
+    if spot is None:
+        await message.answer("Такой точки нет. Список: /venues")
+        return
+    await db.delete_location(message.from_user.id, int(spot["id"]))
+    await message.answer(
+        f"Точка «{esc(str(spot.get('name')))}» удалена. Старые заказы не меняются."
+    )
 
 
 @router.message(F.text & ~F.text.startswith("/"))

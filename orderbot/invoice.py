@@ -20,8 +20,9 @@ def build_invoice(order: dict[str, Any], target: Path) -> Path:
     pdf.set_font("DejaVu", "", 10)
     pdf.cell(0, 6, f"Дата: {order.get('created_at', '')}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Клиент: {order.get('chef_name') or ''}", new_x="LMARGIN", new_y="NEXT")
-    if order.get("venue"):
-        pdf.cell(0, 6, f"Заведение: {order.get('venue')}", new_x="LMARGIN", new_y="NEXT")
+    spot_name = order.get("location_name") or order.get("venue")
+    if spot_name:
+        pdf.cell(0, 6, f"Заведение: {spot_name}", new_x="LMARGIN", new_y="NEXT")
     if order.get("delivery_address"):
         pdf.cell(0, 6, f"Адрес: {order.get('delivery_address')}", new_x="LMARGIN", new_y="NEXT")
     if order.get("delivery_phone"):

@@ -73,6 +73,7 @@ from .formatting import (
     set_local_rate,
     split_message,
 )
+from .locations import choice_text as location_choice_text
 from .keyboards import (
     problem_keyboard,
     alt_keyboard,
@@ -85,6 +86,7 @@ from .keyboards import (
     client_order_keyboard,
     contact_keyboard,
     location_keyboard,
+    location_pick_keyboard,
     rating_keyboard,
     rating_reason_keyboard,
     rating_reason_label,
@@ -442,6 +444,64 @@ async def _warn_quantity(
         log.debug("Не удалось отправить предупреждение о количестве", exc_info=True)
 
 
+@router.callback_query(F.data.startswith("loc:"))
+async def cb_pick_location(
+    callback: CallbackQuery,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Выбор точки при заказе (C11)."""
+    try:
+        _, draft_id, raw_location = callback.data.split(":")
+        location_id = int(raw_location)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    draft = await db.get_draft(draft_id)
+    if draft is None or str(draft.get("status")) != "draft":
+        await callback.answer("Заказ уже обработан", show_alert=True)
+        return
+    if int(draft.get("user_id") or 0) != int(callback.from_user.id):
+        await callback.answer("Это не ваш заказ", show_alert=True)
+        return
+    spot = await db.get_location(location_id) if location_id else None
+    if location_id and (
+        spot is None or int(spot.get("client_id") or 0) != int(callback.from_user.id)
+    ):
+        await callback.answer("Точка не найдена", show_alert=True)
+        return
+    if spot is None:
+        draft["location_id"] = None
+        draft["location_name"] = None
+        draft["location_asked"] = True
+        await db.save_draft(draft)
+        await callback.answer("Без точки")
+    else:
+        draft["location_id"] = int(spot["id"])
+        draft["location_name"] = spot.get("name")
+        if spot.get("address"):
+            draft["delivery_address"] = spot["address"]
+        draft["location_asked"] = True
+        await db.save_draft(draft)
+        await callback.answer(f"Точка: {spot.get('name')}")
+    try:
+        await callback.message.edit_text(
+            f"🏠 Точка: <b>{esc(str(draft.get('location_name') or 'без точки'))}</b>"
+        )
+    except Exception:
+        pass
+    await _advance_draft(
+        callback.bot,
+        db,
+        settings,
+        catalog,
+        draft,
+        callback.message.chat.id,
+        callback.message.message_id,
+    )
+
+
 async def _advance_draft(
     bot: Bot,
     db: Database,
@@ -457,6 +517,30 @@ async def _advance_draft(
         fresh = await db.get_draft(draft["id"])
         if fresh is None or fresh.get("status") != "draft":
             return False
+
+        # C11: у сети несколько точек — спрашиваем точку до остальных вопросов
+        if not fresh.get("location_id") and not fresh.get("location_asked"):
+            client_locations = await db.client_locations(
+                int(fresh.get("user_id") or 0)
+            )
+            if len(client_locations) == 1:
+                spot = client_locations[0]
+                fresh["location_id"] = int(spot["id"])
+                fresh["location_name"] = spot.get("name")
+                if spot.get("address"):
+                    fresh["delivery_address"] = spot["address"]
+                await db.save_draft(fresh)
+            elif len(client_locations) > 1:
+                fresh["location_asked"] = True
+                await db.save_draft(fresh)
+                await _edit_panel(
+                    bot,
+                    chat_id,
+                    message_id,
+                    location_choice_text(),
+                    location_pick_keyboard(fresh["id"], client_locations),
+                )
+                return True
 
         # E5: несколько однотипных уточнений — одним сообщением
         pending = batch_group(fresh.get("items") or [])

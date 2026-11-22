@@ -822,6 +822,28 @@ def claim_actions_keyboard(claim_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def location_pick_keyboard(
+    draft_id: str, locations: list[dict]
+) -> InlineKeyboardMarkup:
+    """Выбор точки при заказе (C11)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in locations[:10]:
+        label = str(row.get("name") or "точка")
+        if row.get("address"):
+            label += f" · {str(row['address'])[:28]}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label[:60], callback_data=f"loc:{draft_id}:{row['id']}"
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="Без точки", callback_data=f"loc:{draft_id}:0")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def pack_checklist_keyboard(
     order_id: int, items: list[dict], checked: set[str]
 ) -> InlineKeyboardMarkup:

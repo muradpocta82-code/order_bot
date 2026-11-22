@@ -217,8 +217,9 @@ def format_order(order: dict[str, Any], title: str = "Заказ") -> str:
         f"👤 Клиент: {chef_name}",
         f"📅 Доставка: <b>{delivery_line(order.get('delivery_date'), order.get('delivery_time'))}</b>",
     ]
-    if order.get("venue"):
-        lines.append(f"🏠 Заведение: {esc(order['venue'])}")
+    spot_name = order.get("location_name") or order.get("venue")
+    if spot_name:
+        lines.append(f"🏠 Заведение: {esc(spot_name)}")
     if order.get("delivery_address"):
         lines.append(f"📍 Адрес: {esc(order['delivery_address'])}")
     if order.get("delivery_phone"):
