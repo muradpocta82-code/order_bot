@@ -3040,6 +3040,41 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_user_coords(self, user_id: int, lat: float, lon: float) -> None:
+        """Геопин клиента: координаты для маршрута и окна прибытия (C12)."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "UPDATE users SET lat = %s, lon = %s, updated_at = %s WHERE user_id = %s",
+            (
+                round(float(lat), 6),
+                round(float(lon), 6),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                int(user_id),
+            ),
+        )
+        await self.conn.commit()
+
+    async def set_location_coords(
+        self, location_id: int, lat: float, lon: float
+    ) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "UPDATE locations SET lat = %s, lon = %s WHERE id = %s",
+            (round(float(lat), 6), round(float(lon), 6), int(location_id)),
+        )
+        await self.conn.commit()
+
+    async def user_coords(self, user_id: int) -> tuple[float, float] | None:
+        """Координаты клиента, если он присылал геопин."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT lat, lon FROM users WHERE user_id = %s", (int(user_id),)
+        )
+        row = await cursor.fetchone()
+        if not row or row["lat"] is None or row["lon"] is None:
+            return None
+        return float(row["lat"]), float(row["lon"])
+
     async def set_user_access(self, user_id: int, access: str) -> None:
         assert self.conn is not None
         await self.conn.execute(

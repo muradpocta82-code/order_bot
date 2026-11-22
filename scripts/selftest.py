@@ -2082,6 +2082,74 @@ async def test_feedback_and_dictionary() -> None:
             await db.close()
 
 
+def test_geo_and_eta() -> None:
+    print("\n[геопин и точное окно прибытия (C12)]")
+    from orderbot.eta import MIN_TRAVEL, minutes_from_depot, order_minutes
+
+    depot = (41.311081, 69.240562)
+    near = (41.311500, 69.240600)
+    far = (41.400000, 69.400000)
+    check("без склада — обычные минуты", minutes_from_depot(None, near, 30) == 30)
+    check("без геопина — обычные минуты", minutes_from_depot(depot, None, 25) == 25)
+    short = minutes_from_depot(depot, near, 30)
+    long = minutes_from_depot(depot, far, 30)
+    check("рядом — быстрее обычного", short < 30, str(short))
+    check("далеко — дольше обычного", long > 30, str(long))
+    check("минимум минут соблюдён", short >= MIN_TRAVEL, str(short))
+    check(
+        "быстрее скорость — меньше минут",
+        minutes_from_depot(depot, far, 30, 50) < minutes_from_depot(depot, far, 30, 15),
+    )
+    order = {"delivery_address": "📍 41.400000, 69.400000"}
+    check(
+        "адрес с координатами считается",
+        order_minutes(order, depot, 30) == minutes_from_depot(depot, far, 30),
+        str(order_minutes(order, depot, 30)),
+    )
+    plain = {"delivery_address": "ул. Навои 12"}
+    check("адрес без координат — обычные минуты", order_minutes(plain, depot, 30) == 30)
+
+
+async def test_geo_db() -> None:
+    print("\n[координаты клиента в базе (C12)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9501
+            await db.ensure_user(client, "Гео Тест")
+            check("без геопина координат нет", await db.user_coords(client) is None)
+            await db.set_user_coords(client, 41.311081, 69.240562)
+            coords = await db.user_coords(client)
+            check(
+                "геопин сохранён",
+                coords is not None and round(coords[0], 4) == 41.3111 and round(coords[1], 4) == 69.2406,
+                str(coords),
+            )
+            user = await db.get_user(client)
+            check(
+                "координаты в профиле",
+                user is not None and user.get("lat") is not None,
+                str(user.get("lat") if user else None),
+            )
+            spot = await db.add_location(client, "Склад", "ул. Навои 12")
+            await db.set_location_coords(spot, 41.32, 69.25)
+            row = await db.get_location(spot)
+            check(
+                "координаты точки сохранены",
+                row is not None and round(float(row["lat"]), 2) == 41.32,
+                str(row),
+            )
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3023,6 +3091,8 @@ async def main() -> int:
     test_locations()
     await test_locations_db()
     await test_feedback_and_dictionary()
+    test_geo_and_eta()
+    await test_geo_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

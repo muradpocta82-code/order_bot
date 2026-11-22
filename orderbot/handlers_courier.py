@@ -21,6 +21,7 @@ from .config import Settings
 from .eta import SPREAD_MIN as eta_spread
 from .eta import client_text as eta_client_text
 from .eta import travel_minutes as eta_travel
+from .eta import order_minutes as eta_order_minutes
 from .eta import window_text as eta_window
 from .stock import consume_order
 from .db import Database
@@ -143,6 +144,13 @@ async def cb_courier_start(
     if order.get("chef_id"):
         try:
             minutes = eta_travel(await db.get_setting("courier_travel_min", ""))
+            depot = _depot_coords(await db.get_setting("depot_point", ""))
+            minutes = eta_order_minutes(
+                order,
+                depot,
+                minutes,
+                _speed(await db.get_setting("courier_speed_kmh", "")),
+            )
             now = datetime.now(settings.timezone)
             message_text = eta_client_text(
                 order_id, now, minutes, str(order.get("delivery_time") or "")
@@ -153,6 +161,58 @@ async def cb_courier_start(
         except Exception:
             log.warning("Не удалось уведомить клиента о доставке №%s", order_id)
     await callback.answer("В доставке")
+
+
+def _depot_coords(raw: str | None) -> tuple[float, float] | None:
+    """Координаты склада из настройки «41.31, 69.24»."""
+    from .route import parse_coords
+
+    return parse_coords(f"📍 {raw}" if raw else None)
+
+
+def _speed(raw: str | None) -> float:
+    """Скорость курьера по городу, км/ч (по умолчанию 25)."""
+    try:
+        value = float(str(raw).replace(",", "."))
+    except (TypeError, ValueError):
+        return 25.0
+    return max(5.0, min(80.0, value))
+
+
+@router.message(Command("depot"))
+async def cmd_depot(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Координаты склада для окна прибытия (C12): /depot 41.311081, 69.240562."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        point = _depot_coords(await db.get_setting("depot_point", ""))
+        speed = _speed(await db.get_setting("courier_speed_kmh", ""))
+        if point:
+            await message.answer(
+                f"🏭 Склад: <code>{point[0]:.6f}, {point[1]:.6f}</code>, "
+                f"скорость курьера {speed:g} км/ч.\n"
+                "Изменить: <code>/depot 41.311081, 69.240562</code>"
+            )
+        else:
+            await message.answer(
+                "Координаты склада не заданы. Формат:\n"
+                "<code>/depot 41.311081, 69.240562</code>"
+            )
+        return
+    point = _depot_coords(raw)
+    if point is None:
+        await message.answer(
+            "Не понял координаты. Формат: <code>/depot 41.311081, 69.240562</code>"
+        )
+        return
+    await db.set_setting("depot_point", f"{point[0]:.6f}, {point[1]:.6f}")
+    await message.answer(
+        f"🏭 Склад сохранён: <code>{point[0]:.6f}, {point[1]:.6f}</code>.\n"
+        "Теперь окно прибытия считается по расстоянию, если у клиента есть геопин."
+    )
 
 
 @router.message(Command("travel"))

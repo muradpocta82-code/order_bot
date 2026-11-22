@@ -195,6 +195,8 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /venues — точки клиента: /venues 123456789
 /venue_payer — плательщик точки: /venue_payer 123456789 Точка 987654321
 /health — здоровье бота
+/depot — координаты склада: /depot 41.311081, 69.240562
+/travel — сколько минут курьер едет по городу: /travel 25
 /slots — интервалы доставки (например /slots 9-12,12-15,15-18)
 """
 
@@ -838,6 +840,20 @@ async def _advance_draft(
         await _edit_panel(
             bot, chat_id, message_id, text, client_order_keyboard(order_id)
         )
+        # C12: без геопина окно прибытия грубое — предлагаем один раз.
+        chef_id = int(fresh.get("user_id") or 0)
+        if chef_id and await db.user_coords(chef_id) is None:
+            if not await db.get_chat_state(chef_id, "geo_hint"):
+                await db.set_chat_state(chef_id, "geo_hint", "1")
+                try:
+                    await bot.send_message(
+                        chef_id,
+                        "📍 Пришлите геопин (скрепка → «Геопозиция») — "
+                        "курьер назовёт более точное время. Это разово.",
+                    )
+                except Exception:
+                    log.debug("Не удалось предложить геопин")
+
         # E8: для голоса и фото спрашиваем, верно ли распознан заказ.
         if str(fresh.get("source") or "") in ("voice", "photo"):
             try:
@@ -2676,14 +2692,32 @@ async def on_contact(
 async def on_location(
     message: Message, db: Database, settings: Settings, catalog: Catalog
 ) -> None:
-    state = await db.get_chat_state(message.chat.id, "onboard")
-    if state != "address" or message.location is None:
+    if message.location is None:
         return
+    state = await db.get_chat_state(message.chat.id, "onboard")
     address = f"📍 {message.location.latitude:.6f}, {message.location.longitude:.6f}"
     await db.ensure_user(
         message.from_user.id, message.from_user.full_name, message.from_user.username
     )
     await db.set_user_address(message.from_user.id, address)
+    await db.set_user_coords(
+        message.from_user.id,
+        message.location.latitude,
+        message.location.longitude,
+    )
+    # Одна точка — геопин уточняет и её: курьер поедет по координатам.
+    spots = await db.client_locations(message.from_user.id)
+    if len(spots) == 1:
+        await db.set_location_coords(
+            int(spots[0]["id"]),
+            message.location.latitude,
+            message.location.longitude,
+        )
+    if state != "address":
+        await message.answer(
+            "📍 Геопин записан: теперь окно прибытия курьера будет точнее."
+        )
+        return
     user = await db.get_user(message.from_user.id) or {}
     await _finish_profile(message, db, settings, catalog, user)
 
