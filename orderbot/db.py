@@ -1121,6 +1121,37 @@ class Database:
             "exact": int(row.get("exact") or 0),
         }
 
+    async def weekday_history(
+        self, days: int = 56
+    ) -> dict[int, list[dict[str, Any]]]:
+        """История продаж по дням для прогноза закупки (F8).
+
+        Возвращает catalog_id → [{"date", "weekday", "qty"}].
+        """
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(7, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT i.catalog_id, to_char(date_trunc('day', o.created_at), 'YYYY-MM-DD') "
+            "AS day, COALESCE(SUM(i.qty), 0) AS qty "
+            "FROM order_items i JOIN orders o ON o.id = i.order_id "
+            "WHERE o.status != 'cancelled' AND o.created_at >= %s "
+            "AND i.catalog_id IS NOT NULL "
+            "GROUP BY i.catalog_id, day ORDER BY day",
+            (since,),
+        )
+        history: dict[int, list[dict[str, Any]]] = {}
+        for row in await cursor.fetchall():
+            try:
+                day = datetime.fromisoformat(str(row["day"]))
+            except ValueError:
+                continue
+            history.setdefault(int(row["catalog_id"]), []).append(
+                {"date": str(row["day"]), "weekday": day.weekday(), "qty": float(row["qty"] or 0)}
+            )
+        return history
+
     async def feedback_by_source(self, days: int = 30) -> list[dict[str, Any]]:
         """Доля «поправить» по источнику заказа: текст, голос, фото (E9)."""
         assert self.conn is not None

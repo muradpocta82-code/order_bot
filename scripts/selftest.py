@@ -2318,6 +2318,79 @@ async def test_shadow_db() -> None:
             await db.close()
 
 
+def test_forecast() -> None:
+    print("\n[прогноз закупки по дню недели (F8)]")
+    from orderbot.forecast import add_forecasts, summary_lines, weekday_forecast
+
+    history = [
+        {"date": "2026-11-02", "weekday": 0, "qty": 10},
+        {"date": "2026-11-09", "weekday": 0, "qty": 12},
+        {"date": "2026-11-16", "weekday": 0, "qty": 14},
+        {"date": "2026-11-23", "weekday": 0, "qty": 20},
+        {"date": "2026-11-03", "weekday": 1, "qty": 5},
+    ]
+    monday = weekday_forecast(history, 0)
+    check("среднее по дню недели", monday["ready"] and monday["avg"] == 14.0, str(monday))
+    check("число наблюдений", monday["samples"] == 4, str(monday))
+    tuesday = weekday_forecast(history, 1)
+    check("мало истории — без прогноза", not tuesday["ready"], str(tuesday))
+    unknown = weekday_forecast([], 3)
+    check("пустая история", not unknown["ready"] and unknown["avg"] == 0.0, str(unknown))
+    broken = weekday_forecast([{"weekday": 0, "qty": "abc"}, {"weekday": 0, "qty": 4}], 0)
+    check("мусор в истории пропускается", not broken["ready"], str(broken))
+
+    rows = [
+        {"catalog_id": 4, "name": "Куриное филе", "unit": "кг"},
+        {"catalog_id": 5, "name": "Помидоры", "unit": "кг"},
+        {"catalog_id": None, "name": "Без прайса", "unit": "шт"},
+    ]
+    add_forecasts(rows, {4: history, 5: history[:1]}, 0)
+    check("прогноз проставлен", rows[0]["forecast"]["ready"], str(rows[0]["forecast"]))
+    check("мало данных у второй позиции", not rows[1]["forecast"]["ready"])
+    check("без catalog_id прогноза нет", not rows[2]["forecast"]["ready"])
+    lines = summary_lines(rows)
+    check("подсказка по филе", any("Куриное филе" in line for line in lines), str(lines))
+    check("в подсказке нет помидоров", all("Помидоры" not in line for line in lines), str(lines))
+    check("подсказка с количеством", lines and "14" in lines[0], str(lines))
+
+
+async def test_forecast_db() -> None:
+    print("\n[история продаж по дням (F8)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9701
+            await db.ensure_user(client, "Прогноз Тест")
+            order_id = await db.create_order(
+                {
+                    "id": "fc-1",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 3,
+                  "unit": "кг", "price": 5.0, "total": 15.0}],
+                None,
+            )
+            history = await db.weekday_history(56)
+            check("история не пустая", bool(history.get(4)), str(list(history)[:5]))
+            entry = history[4][0]
+            check("в истории есть дата и день недели", "date" in entry and "weekday" in entry, str(entry))
+            check("количество сходится", float(entry["qty"]) == 3.0, str(entry))
+            check("заказ учтён один раз", len(history[4]) == 1, str(history[4]))
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3264,6 +3337,8 @@ async def main() -> int:
     test_documents_with_payment()
     test_shadow_prompts()
     await test_shadow_db()
+    test_forecast()
+    await test_forecast_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

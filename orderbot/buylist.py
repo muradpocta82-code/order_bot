@@ -71,6 +71,18 @@ async def collect(
             }
         )
     rows.sort(key=lambda row: (row["category"], row["name"]))
+    # F8: прогноз по дню недели — «сколько обычно уходит в этот день».
+    try:
+        from datetime import date as _date
+
+        from .forecast import add_forecasts
+
+        target = _date.fromisoformat(str(day))
+        history = await db.weekday_history(56)
+        add_forecasts(rows, history, target.weekday())
+    except Exception:
+        for row in rows:
+            row.setdefault("forecast", {"ready": False, "samples": 0, "avg": 0.0})
     return rows, pending
 
 
@@ -78,6 +90,9 @@ def as_text(rows: list[dict[str, Any]], pending: list[dict[str, Any]], day: str)
     if not rows:
         return f"🧺 <b>Закупка на {day}</b>\n\nЗаказов нет — закупать нечего."
     total_sum = sum(row["need"] * row["purchase"] for row in rows)
+    from .forecast import summary_lines
+
+    forecast_lines = summary_lines(rows)
     lines = [f"🧺 <b>Закупка на {day}</b>", ""]
     by_supplier = any(row.get("supplier") for row in rows)
     section = None
@@ -101,6 +116,10 @@ def as_text(rows: list[dict[str, Any]], pending: list[dict[str, Any]], day: str)
         if not row["available"]:
             parts.append("⚠️ нет в наличии")
         lines.append(" ".join(parts))
+    if forecast_lines:
+        lines.append("")
+        lines.append("📈 Обычно в этот день недели:")
+        lines.extend(forecast_lines)
     if total_sum:
         lines.append("")
         lines.append(f"По закупочным ценам из прайса: <b>{money(total_sum)}</b>")
