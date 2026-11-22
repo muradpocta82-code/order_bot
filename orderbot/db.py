@@ -485,6 +485,8 @@ class Database:
     # черновики
     # ------------------------------------------------------------------
     async def create_draft(self, payload: dict[str, Any]) -> None:
+        # B13: цены и скидки клиента применяются к черновику один раз.
+        await self.apply_client_pricing(payload)
         assert self.conn is not None
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         await self.conn.execute(
@@ -680,8 +682,9 @@ class Database:
                 order_id = int(cursor.lastrowid)
             for item in items:
                 await self.conn.execute(
-                    "INSERT INTO order_items(order_id, catalog_id, name, qty, unit, price, total, raw, status, stock_note) "
-                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "INSERT INTO order_items(order_id, catalog_id, name, qty, unit, price, total, raw, "
+                    "status, stock_note, base_price, discount_pct) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         order_id,
                         item.get("catalog_id"),
@@ -693,6 +696,8 @@ class Database:
                         item.get("raw"),
                         item.get("status"),
                         item.get("stock_note"),
+                        item.get("base_price"),
+                        item.get("discount_pct"),
                     ),
                 )
             if draft_id is not None:
@@ -1330,8 +1335,8 @@ class Database:
             "%Y-%m-%d %H:%M:%S"
         )
         cursor = await self.conn.execute(
-            "SELECT i.catalog_id, i.name, i.qty, i.price, o.chef_id, o.chef_name, "
-            "o.created_at AS created_at "
+            "SELECT i.catalog_id, i.name, i.qty, i.price, i.base_price, i.discount_pct, "
+            "o.chef_id, o.chef_name, o.created_at AS created_at "
             "FROM order_items i "
             "JOIN orders o ON o.id = i.order_id "
             "WHERE o.status = 'done' AND o.created_at >= %s",
@@ -1598,6 +1603,146 @@ class Database:
     # ------------------------------------------------------------------
     # книга расчётов (B3)
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # цены и скидки по клиентам (B13)
+    # ------------------------------------------------------------------
+    async def client_discount(self, client_id: int) -> dict[str, Any] | None:
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT discount_pct, note, updated_at FROM client_discounts "
+            "WHERE client_id = %s",
+            (int(client_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_client_discount(
+        self, client_id: int, discount_pct: float, note: str = ""
+    ) -> None:
+        """Скидка клиента в процентах (0 — убрать)."""
+        assert self.conn is not None
+        pct = round(float(discount_pct), 2)
+        if pct <= 0:
+            await self.clear_client_discount(client_id)
+            return
+        await self.conn.execute(
+            "INSERT INTO client_discounts(client_id, discount_pct, note, updated_at) "
+            "VALUES (%s, %s, %s, now()) ON CONFLICT (client_id) DO UPDATE "
+            "SET discount_pct = EXCLUDED.discount_pct, note = EXCLUDED.note, "
+            "updated_at = now()",
+            (int(client_id), min(pct, 100.0), note[:200]),
+        )
+        await self.conn.commit()
+
+    async def clear_client_discount(self, client_id: int) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "DELETE FROM client_discounts WHERE client_id = %s", (int(client_id),)
+        )
+        await self.conn.commit()
+
+    async def client_prices_map(self, client_id: int) -> dict[int, float]:
+        """Особые цены клиента: catalog_id → цена."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT catalog_id, price FROM client_prices WHERE client_id = %s",
+            (int(client_id),),
+        )
+        return {
+            int(row["catalog_id"]): float(row["price"])
+            for row in await cursor.fetchall()
+        }
+
+    async def set_client_price(
+        self, client_id: int, catalog_id: int, price: float
+    ) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO client_prices(client_id, catalog_id, price, updated_at) "
+            "VALUES (%s, %s, %s, now()) ON CONFLICT (client_id, catalog_id) "
+            "DO UPDATE SET price = EXCLUDED.price, updated_at = now()",
+            (int(client_id), int(catalog_id), round(float(price), 2)),
+        )
+        await self.conn.commit()
+
+    async def clear_client_price(self, client_id: int, catalog_id: int) -> None:
+        assert self.conn is not None
+        await self.conn.execute(
+            "DELETE FROM client_prices WHERE client_id = %s AND catalog_id = %s",
+            (int(client_id), int(catalog_id)),
+        )
+        await self.conn.commit()
+
+    async def apply_client_pricing(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ставит цены клиента в позиции черновика (B13).
+
+        Идемпотентно: базовая цена и базовая сумма запоминаются в позиции,
+        поэтому повторный вызов не накручивает скидку дважды.
+        """
+        from .clientpricing import client_price, scale_sum
+
+        client_id = int(payload.get("user_id") or 0)
+        result: dict[str, Any] = {"discount_pct": 0.0, "items": 0, "saved": 0.0}
+        if not client_id:
+            return result
+        info = await self.client_discount(client_id)
+        discount = float((info or {}).get("discount_pct") or 0)
+        overrides = await self.client_prices_map(client_id)
+        result["discount_pct"] = discount
+        if discount <= 0 and not overrides:
+            return result
+        saved = 0.0
+        touched = 0
+        for item in payload.get("items") or []:
+            raw_id = item.get("catalog_id")
+            try:
+                catalog_id = int(raw_id) if raw_id else 0
+            except (TypeError, ValueError):
+                continue
+            if not catalog_id:
+                continue
+            base = item.get("base_price")
+            if base in (None, ""):
+                base = item.get("price")
+            try:
+                base = round(float(base or 0), 2)
+            except (TypeError, ValueError):
+                continue
+            if base <= 0:
+                continue
+            price, pct = client_price(base, discount, overrides.get(catalog_id))
+            base_sum = item.get("base_sum")
+            if base_sum in (None, ""):
+                base_sum = item.get("sum")
+            try:
+                base_sum = round(float(base_sum or 0), 2)
+            except (TypeError, ValueError):
+                base_sum = 0.0
+            item["base_price"] = base
+            if base_sum > 0:
+                item["base_sum"] = base_sum
+            if price >= base - 0.005:
+                # правило сняли — возвращаем цену прайса, если она была изменена
+                try:
+                    current = float(item.get("price") or 0)
+                except (TypeError, ValueError):
+                    current = base
+                if abs(current - base) > 0.005:
+                    item["price"] = base
+                    if base_sum > 0:
+                        item["sum"] = base_sum
+                item.pop("discount_pct", None)
+                continue
+            item["price"] = price
+            item["discount_pct"] = pct
+            if base_sum > 0:
+                item["sum"] = scale_sum(base_sum, base, price)
+                saved += round(base_sum - item["sum"], 2)
+            touched += 1
+        result["items"] = touched
+        result["saved"] = round(saved, 2)
+        return result
+
     async def client_open_orders(self, client_id: int) -> list[dict[str, Any]]:
         """Заказы клиента с остатком долга, старые сверху — для зачёта FIFO.
 

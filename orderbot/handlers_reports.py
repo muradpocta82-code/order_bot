@@ -1378,6 +1378,17 @@ async def cmd_client(
         )
     claims = await db.client_claims_count(chef_id)
     rating = await db.client_avg_rating(chef_id)
+    discount_row = await db.client_discount(chef_id) or {}
+    discount_pct = float(discount_row.get("discount_pct") or 0)
+    price_map = await db.client_prices_map(chef_id)
+    from orderbot.catalog import Catalog as _CatalogCard
+
+    card_catalog = _CatalogCard.load(settings.catalog_path)
+    special_prices = [
+        card_catalog.get(catalog_id).name
+        for catalog_id in price_map
+        if card_catalog.get(catalog_id) is not None
+    ]
     text = card_text(
         user,
         stats,
@@ -1387,6 +1398,8 @@ async def cmd_client(
         referrer=str(referrer),
         claims=claims,
         rating=rating,
+        discount_pct=discount_pct,
+        special_prices=special_prices,
     )
     await message.answer(text)
 
@@ -1715,6 +1728,133 @@ async def cb_claim_action(
         except Exception:
             pass
     await callback.answer("Записал решение")
+
+
+@router.message(Command("discount"))
+async def cmd_discount(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Скидка клиента процентом: /discount ID 5 отгрузка от 300."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").strip().split(maxsplit=2)
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/discount ID ПРОЦЕНТ причина</code>\n"
+            "Пример: /discount 123456789 5 постоянный клиент\n"
+            "Убрать скидку: <code>/discount_del ID</code>"
+        )
+        return
+    client_id = int(parts[0])
+    try:
+        pct = round(float(parts[1].replace(",", ".")), 2)
+    except ValueError:
+        await message.answer("Процент должен быть числом, например <code>5</code>.")
+        return
+    if pct < 0 or pct > 100:
+        await message.answer("Процент — от 0 до 100.")
+        return
+    user = await db.get_user(client_id)
+    if user is None:
+        await message.answer(f"Клиент с id {client_id} не найден.")
+        return
+    if pct == 0:
+        await db.clear_client_discount(client_id)
+        await message.answer("Скидка убрана: клиент платит по прайсу.")
+        return
+    await db.set_client_discount(client_id, pct, parts[2] if len(parts) > 2 else "")
+    name = user.get("venue") or user.get("name") or client_id
+    await message.answer(
+        f"🏷 {esc(str(name))}: скидка <b>{pct:g}%</b>. "
+        "Применяется в следующем заказе, цена в прайсе не меняется."
+    )
+
+
+@router.message(Command("discount_del"))
+async def cmd_discount_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Убрать скидку клиента."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().split()
+    if not raw or not raw[0].lstrip("-").isdigit():
+        await message.answer("Формат: <code>/discount_del ID</code>")
+        return
+    client_id = int(raw[0])
+    await db.clear_client_discount(client_id)
+    await message.answer("Скидка убрана: клиент платит по прайсу.")
+
+
+@router.message(Command("cprice"))
+async def cmd_client_price(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Особая цена клиента: /cprice ID помидоры 1.10."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").strip().split(maxsplit=2)
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit():
+        await message.answer(
+            "Формат: <code>/cprice ID позиция цена</code>\n"
+            "Пример: /cprice 123456789 помидоры 1.10\n"
+            "Убрать: <code>/cprice_del ID помидоры</code>"
+        )
+        return
+    client_id = int(parts[0])
+    user = await db.get_user(client_id)
+    if user is None:
+        await message.answer(f"Клиент с id {client_id} не найден.")
+        return
+    match = catalog.match(parts[1], limit=1, min_score=55)
+    if not match:
+        await message.answer("Такой позиции нет в прайсе.")
+        return
+    item = match[0].item
+    try:
+        price = round(float(parts[2].replace(",", ".").replace("$", "")), 2)
+    except ValueError:
+        await message.answer("Цена должна быть числом, например <code>1.10</code>.")
+        return
+    if price <= 0:
+        await message.answer("Цена должна быть больше нуля.")
+        return
+    await db.set_client_price(client_id, item.id, price)
+    name = user.get("venue") or user.get("name") or client_id
+    await message.answer(
+        f"🏷 {esc(str(name))}: «{esc(item.name)}» по <b>{money(price)}</b> "
+        f"вместо {money(item.price)}. Действует в следующих заказах."
+    )
+
+
+@router.message(Command("cprice_del"))
+async def cmd_client_price_del(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Убрать особую цену клиента."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit():
+        await message.answer("Формат: <code>/cprice_del ID помидоры</code>")
+        return
+    client_id = int(parts[0])
+    match = catalog.match(parts[1], limit=1, min_score=55)
+    if not match:
+        await message.answer("Такой позиции нет в прайсе.")
+        return
+    await db.clear_client_price(client_id, match[0].item.id)
+    await message.answer(
+        f"Особая цена на «{esc(match[0].item.name)}» убрана: по прайсу."
+    )
 
 
 @router.message(Command("claims"))

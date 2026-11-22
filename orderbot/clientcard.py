@@ -53,6 +53,8 @@ def card_text(
     referrer: str = "",
     claims: int = 0,
     rating: float | None = None,
+    discount_pct: float = 0.0,
+    special_prices: list[str] | None = None,
 ) -> str:
     """Текст карточки клиента в разметке Telegram."""
     venue = user.get("venue") or user.get("name") or "клиент"
@@ -70,6 +72,12 @@ def card_text(
         lines.append(f"📞 {esc(user.get('phone'))}")
     if user.get("address"):
         lines.append(f"📍 {esc(user.get('address'))}")
+    if discount_pct > 0:
+        lines.append(f"🏷 Скидка: <b>{discount_pct:g}%</b>")
+    if special_prices:
+        lines.append(
+            "🏷 Особые цены: " + ", ".join(esc(name) for name in special_prices[:5])
+        )
 
     lines.append("")
     orders = int(stats.get("orders") or 0)

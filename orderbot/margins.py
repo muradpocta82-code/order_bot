@@ -32,7 +32,7 @@ def collect(
     catalog — прайс (нужен для категории и закупки из файла),
     costs — закупочные цены из базы (catalog_id → цена).
     """
-    totals = {"revenue": 0.0, "cost": 0.0, "unknown": 0, "items": 0}
+    totals = {"revenue": 0.0, "cost": 0.0, "unknown": 0, "items": 0, "discount": 0.0}
     positions: dict[int, dict[str, Any]] = {}
     categories: dict[str, dict[str, float]] = {}
     clients: dict[int, dict[str, Any]] = {}
@@ -62,6 +62,15 @@ def collect(
         totals["revenue"] += revenue
         totals["cost"] += cost
         totals["items"] += 1
+        # B13: сколько отдали скидкой клиенту (базовая цена − цена клиента)
+        base_price = row.get("base_price")
+        if base_price is not None:
+            try:
+                given = (float(base_price) - price) * qty
+            except (TypeError, ValueError):
+                given = 0.0
+            if given > 0:
+                totals["discount"] += given
 
         entry = positions.setdefault(
             catalog_id or -len(positions) - 1,
@@ -139,6 +148,10 @@ def report_lines(data: dict[str, Any], top: int = 3) -> list[str]:
                 f"• {name}: {_money(bucket['margin'])} "
                 f"({bucket['margin_pct']:.0f}%)"
             )
+    discount = float((data.get("totals") or {}).get("discount") or 0)
+    if discount > 0:
+        lines.append("")
+        lines.append(f"Скидки клиентам: <b>{_money(discount)}</b>")
     clients = data["clients"]
     if clients:
         lines.append("")

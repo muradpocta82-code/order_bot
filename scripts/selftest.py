@@ -732,6 +732,22 @@ def test_margin_slices() -> None:
     check("убыточные в отчёте", "Убыточные позиции" in text, text)
     check("помидоры в убытке", "Помидоры" in text, text)
 
+    discount_rows = [
+        {"catalog_id": 4, "name": "Куриное филе", "qty": 2, "price": 4.73,
+         "base_price": 5.25, "discount_pct": 10, "chef_id": 1, "chef_name": "Кафе Ромашка"},
+    ]
+    discount_data = collect(discount_rows, catalog, costs)
+    check(
+        "скидка клиента в итогах",
+        round(discount_data["totals"]["discount"], 2) == 1.04,
+        str(discount_data["totals"]),
+    )
+    check(
+        "строка скидок в отчёте",
+        "Скидки клиентам" in "\n".join(report_lines(discount_data)),
+        str(report_lines(discount_data)),
+    )
+
     empty = collect([], catalog, {})
     check("пустые данные не падают", empty["margin"] == 0.0 and report_lines(empty) == [])
 
@@ -1785,6 +1801,99 @@ def test_pack_columns() -> None:
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_client_pricing() -> None:
+    print("\n[цены и скидки по клиентам (B13)]")
+    from orderbot.clientpricing import client_price, describe, scale_sum
+
+    check("цена без скидки", client_price(10.0) == (10.0, 0.0), str(client_price(10.0)))
+    check("скидка 10%", client_price(10.0, 10) == (9.0, 10.0), str(client_price(10.0, 10)))
+    check(
+        "особая цена важнее скидки",
+        client_price(10.0, 10, 8.0) == (8.0, 20.0),
+        str(client_price(10.0, 10, 8.0)),
+    )
+    check("скидка 100% — ноль", client_price(10.0, 100)[0] == 0.0, str(client_price(10.0, 100)))
+    check("отрицательная скидка не считается", client_price(10.0, -5) == (10.0, 0.0))
+    check("пустая база", client_price(0.0, 5) == (0.0, 0.0), str(client_price(0.0, 5)))
+    check("сумма с фасовкой", scale_sum(97.5, 9.75, 8.775) == 87.75, str(scale_sum(97.5, 9.75, 8.775)))
+    check("нулевая сумма", scale_sum(0, 10, 9) == 0.0)
+    check("описание скидки", describe(5, 2) == "скидка 5% · особых цен: 2", describe(5, 2))
+    check("описание пустое", describe(0, 0) == "")
+
+
+async def test_client_pricing_db() -> None:
+    print("\n[скидки клиента в заказе (B13)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9201
+            await db.ensure_user(client, "Скидочный Тест")
+            await db.set_client_discount(client, 10, "постоянный клиент")
+            row = await db.client_discount(client)
+            check("скидка сохранена", float(row["discount_pct"]) == 10.0, str(row))
+            order_id = await db.create_order(
+                {
+                    "id": "disc-1",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 2,
+                  "unit": "кг", "price": 9.0, "total": 18.0,
+                  "base_price": 10.0, "discount_pct": 10.0}],
+                None,
+            )
+            order = await db.get_order(order_id)
+            item = order["items"][0]
+            check("в заказ записалась цена со скидкой", float(item["price"]) == 9.0, str(item["price"]))
+            check("базовая цена сохранена", float(item["base_price"]) == 10.0, str(item["base_price"]))
+            await db.set_client_price(client, 4, 8.0)
+            price_map = await db.client_prices_map(client)
+            check("особая цена сохранена", price_map.get(4) == 8.0, str(price_map))
+            draft = {
+                "user_id": client,
+                "items": [
+                    {
+                        "catalog_id": 4,
+                        "qty": 2,
+                        "final_qty": 2,
+                        "unit": "кг",
+                        "price": 10.0,
+                        "sum": 20.0,
+                    }
+                ],
+            }
+            first = await db.apply_client_pricing(draft)
+            item = draft["items"][0]
+            check("особая цена применилась", item["price"] == 8.0 and item["sum"] == 16.0, str(item))
+            check("скидка посчитана", first["discount_pct"] == 10.0 and first["items"] == 1, str(first))
+            second = await db.apply_client_pricing(draft)
+            check(
+                "повторный вызов не накручивает скидку",
+                draft["items"][0]["sum"] == 16.0 and second["items"] == 1,
+                str(draft["items"][0]),
+            )
+            await db.clear_client_price(client, 4)
+            draft2 = {"user_id": client, "items": [{"catalog_id": 4, "qty": 1, "price": 10.0, "sum": 10.0}]}
+            await db.apply_client_pricing(draft2)
+            check("после удаления особой цены — процент", draft2["items"][0]["sum"] == 9.0, str(draft2["items"][0]))
+            await db.clear_client_discount(client)
+            draft3 = {"user_id": client, "items": [{"catalog_id": 4, "qty": 1, "price": 10.0, "sum": 10.0}]}
+            await db.apply_client_pricing(draft3)
+            check("без правил — цена прайса", draft3["items"][0]["sum"] == 10.0, str(draft3["items"][0]))
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -2721,6 +2830,8 @@ async def main() -> int:
     await test_failure_safety()
     await test_alias_migration()
     test_pack_columns()
+    test_client_pricing()
+    await test_client_pricing_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()
