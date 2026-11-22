@@ -123,6 +123,8 @@ def _catalog_from_xlsx() -> list[dict]:
     c_id = column("id")
     c_name = column("название", "наименование")
     c_unit = column("единица")
+    c_pack_size = column("размер")
+    c_pack_unit = column("фасовка ед", "фасовка, ед", "ед фасовки")
     c_pack = column("фасовка")
     c_price = column("цена")
     c_cat = column("категория")
@@ -148,13 +150,35 @@ def _catalog_from_xlsx() -> list[dict]:
                 "id": int(row[c_id]) if c_id is not None and row[c_id] else len(items) + 1,
                 "name": str(row[c_name]),
                 "unit": str(row[c_unit] or "кг") if c_unit is not None else "кг",
-                "pack": str(row[c_pack] or "") if c_pack is not None else "",
+                "pack": _webapp_pack(row, c_pack, c_pack_size, c_pack_unit, c_unit),
                 "price": round(price, 2),
                 "category": str(row[c_cat] or "") if c_cat is not None else "",
                 "stock": stock,
             }
         )
     return items
+
+
+def _webapp_pack(
+    row: tuple,
+    c_pack: int | None,
+    c_pack_size: int | None,
+    c_pack_unit: int | None,
+    c_unit: int | None,
+) -> str:
+    """Фасовка для мини-аппа: данные из колонок важнее текста (E6)."""
+    try:
+        size = float(row[c_pack_size]) if c_pack_size is not None else 0.0
+    except (TypeError, ValueError, IndexError):
+        size = 0.0
+    if size > 0:
+        unit = ""
+        if c_pack_unit is not None:
+            unit = str(row[c_pack_unit] or "").strip()
+        if not unit and c_unit is not None:
+            unit = str(row[c_unit] or "").strip()
+        return f"{size:g} {unit}".strip()
+    return str(row[c_pack] or "") if c_pack is not None else ""
 
 
 def load_catalog() -> tuple[list[dict], str]:

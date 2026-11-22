@@ -1744,6 +1744,47 @@ def test_eta_and_envcheck() -> None:
         check("имена из примера", names == ["BOT_TOKEN", "NEW_KEY"], str(names))
 
 
+def test_pack_columns() -> None:
+    print("\n[фасовка из колонок прайса (E6)]")
+    import tempfile
+
+    from openpyxl import Workbook
+
+    from orderbot.units import pack_size, price_per_unit
+
+    tmp = Path(tempfile.mkdtemp())
+    path = tmp / "pack.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["ID", "Название", "Единица", "Фасовка", "Размер фасовки", "Фасовка, ед", "Цена"])
+    ws.append([1, "Помидоры", "кг", "", 5, "кг", 10])
+    ws.append([2, "Молоко", "л", "бутылка 1 л", "", "", 2])
+    ws.append([3, "Филе", "кг", "ящик 10 кг", 12, "кг", 30])
+    wb.save(path)
+
+    catalog = Catalog.load(path)
+    tomatoes = catalog.get(1)
+    milk = catalog.get(2)
+    fillet = catalog.get(3)
+    check("фасовка из колонок", tomatoes.pack == "5 кг", tomatoes.pack)
+    check("размер фасовки считается", pack_size(tomatoes.pack, tomatoes.unit) == 5.0, tomatoes.pack)
+    check(
+        "цена за килограмм из колонок",
+        price_per_unit(tomatoes.price, tomatoes.pack, tomatoes.unit) == 2.0,
+        str(price_per_unit(tomatoes.price, tomatoes.pack, tomatoes.unit)),
+    )
+    check("без колонок — текст фасовки", milk.pack == "бутылка 1 л", milk.pack)
+    check("данные важнее текста", fillet.pack == "12 кг", fillet.pack)
+    check(
+        "название с фасовкой",
+        tomatoes.full_name == "Помидоры (5 кг)",
+        tomatoes.full_name,
+    )
+    import shutil
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -2679,6 +2720,7 @@ async def main() -> int:
     await test_start_and_greeting()
     await test_failure_safety()
     await test_alias_migration()
+    test_pack_columns()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

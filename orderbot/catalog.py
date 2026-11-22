@@ -125,6 +125,14 @@ class Catalog:
                 idx["synonyms"] = pos
             elif title.startswith("единиц") or title in ("ед", "unit", "ед.изм"):
                 idx["unit"] = pos
+            elif title.startswith("размер") or title in (
+                "pack_size", "объем фасовки", "объём фасовки"
+            ):
+                idx["pack_size"] = pos
+            elif title in ("фасовка ед", "ед фасовки", "фасовка единица", "pack_unit") or (
+                title.startswith("фасов") and "ед" in title
+            ):
+                idx["pack_unit"] = pos
             elif title.startswith("фасов") or title in ("pack", "упаковка"):
                 idx["pack"] = pos
             elif title.startswith("цена") or title in ("price", "стоимость"):
@@ -162,6 +170,17 @@ class Catalog:
             synonyms = [s.strip() for s in re.split(r"[;\n]+", synonyms_raw) if s.strip()]
             unit = str(row[idx["unit"]] or "шт").strip() if "unit" in idx else "шт"
             pack = str(row[idx["pack"]] or "").strip() if "pack" in idx else ""
+            # E6: данные важнее текста — менеджер правит Excel, деплой не нужен.
+            pack_size_row = (
+                _num(row[idx["pack_size"]]) if "pack_size" in idx else None
+            )
+            pack_unit_row = (
+                str(row[idx["pack_unit"]] or "").strip()
+                if "pack_unit" in idx
+                else ""
+            )
+            if pack_size_row is not None and pack_size_row > 0:
+                pack = f"{pack_size_row:g} {pack_unit_row or unit}".strip()
             price = _num(row[idx["price"]]) or 0.0
             category = str(row[idx["category"]] or "").strip() if "category" in idx else ""
             stock = _num(row[idx["stock"]]) if "stock" in idx else None
