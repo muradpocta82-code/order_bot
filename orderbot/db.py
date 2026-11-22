@@ -1074,6 +1074,39 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def feedback_by_source(self, days: int = 30) -> list[dict[str, Any]]:
+        """Доля «поправить» по источнику заказа: текст, голос, фото (E9)."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(o.source, 'неизвестно') AS source, "
+            "COALESCE(SUM(CASE WHEN f.verdict = 'ok' THEN 1 ELSE 0 END), 0) AS ok, "
+            "COALESCE(SUM(CASE WHEN f.verdict = 'fix' THEN 1 ELSE 0 END), 0) AS fix "
+            "FROM parse_feedback f LEFT JOIN orders o ON o.id = f.order_id "
+            "WHERE f.created_at >= %s GROUP BY COALESCE(o.source, 'неизвестно') "
+            "ORDER BY COUNT(*) DESC",
+            (since,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def photo_quality(self, days: int = 30) -> dict[str, float]:
+        """Качество фото-списков: доля правок и число оценок (E9)."""
+        for row in await self.feedback_by_source(days):
+            if str(row.get("source")) != "photo":
+                continue
+            ok = int(row.get("ok") or 0)
+            fix = int(row.get("fix") or 0)
+            total = ok + fix
+            return {
+                "ok": float(ok),
+                "fix": float(fix),
+                "total": float(total),
+                "fix_pct": round(fix / total * 100, 1) if total else 0.0,
+            }
+        return {"ok": 0.0, "fix": 0.0, "total": 0.0, "fix_pct": 0.0}
+
     async def parse_stats(self, days: int = 30) -> dict[str, Any]:
         assert self.conn is not None
         since = (datetime.now() - timedelta(days=int(days))).strftime(

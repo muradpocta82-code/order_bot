@@ -68,6 +68,27 @@ async def cmd_quality(message: Message, db: Database, settings: Settings) -> Non
                 f"{row['n']} зак., вопросов {avg_q:.1f}, "
                 f"{avg_ms / 1000:.1f} с\n"
             )
+    by_source = await db.feedback_by_source(30)
+    if by_source:
+        names = {"text": "текст", "voice": "голос", "photo": "фото", "webapp": "мини-апп"}
+        text += "\n🎯 <b>По источнику заказа</b>\n"
+        for row in by_source:
+            ok = int(row.get("ok") or 0)
+            fix = int(row.get("fix") or 0)
+            total = ok + fix
+            share = fix / total * 100 if total else 0.0
+            source = str(row.get("source") or "неизвестно")
+            text += (
+                f"• {esc(names.get(source, source))}: поправили {fix} из {total} "
+                f"({share:.0f}%)\n"
+            )
+        photo = await db.photo_quality(30)
+        if photo["total"] >= 5 and photo["fix_pct"] >= 30:
+            text += (
+                "\n⚠️ Фото-списки распознаются хуже: просите клиентов присылать "
+                "текстом или голосом.\n"
+            )
+
     feedback = await db.feedback_stats(30)
     if feedback:
         text += "\n\n🎤 <b>Распознавание голоса и фото</b>\n"

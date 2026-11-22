@@ -840,6 +840,19 @@ async def _advance_draft(
         await _edit_panel(
             bot, chat_id, message_id, text, client_order_keyboard(order_id)
         )
+        # E9: если фото-списки распознаются плохо — просим голосом.
+        if str(fresh.get("source") or "") == "photo":
+            try:
+                photo = await db.photo_quality(30)
+                if photo["total"] >= 5 and photo["fix_pct"] >= 30:
+                    await bot.send_message(
+                        chat_id,
+                        "📷 Фото иногда распознаётся хуже: если что-то не так — "
+                        "пришлите тот же список голосом, я поправлю.",
+                    )
+            except Exception:
+                log.debug("Не удалось показать подсказку про фото")
+
         # C12: без геопина окно прибытия грубое — предлагаем один раз.
         chef_id = int(fresh.get("user_id") or 0)
         if chef_id and await db.user_coords(chef_id) is None:

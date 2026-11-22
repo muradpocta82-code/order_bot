@@ -314,7 +314,8 @@ class AIClient:
         if not self._user_allowed(user_id):
             log.warning("Лимит ИИ на пользователя %s исчерпан — разбор локальный", user_id)
             return None
-        if self.deepseek_enabled and self._deepseek is not None:
+        provider = str(getattr(self.settings, "ai_provider", "auto") or "auto")
+        if provider in ("auto", "deepseek") and self.deepseek_enabled and self._deepseek is not None:
             payload = await self._deepseek_json(text, today)
             order = self._order_from_payload(payload, text, "deepseek", now)
             if order and order.items:
@@ -323,7 +324,7 @@ class AIClient:
                 log.info("Разбор DeepSeek: %d позиций", len(order.items))
                 return order
 
-        if self.gemini_enabled and self._gemini is not None:
+        if provider in ("auto", "gemini") and self.gemini_enabled and self._gemini is not None:
             payload = await self._gemini_json(text, today)
             order = self._order_from_payload(payload, text, "gemini", now)
             if order and order.items:

@@ -61,6 +61,7 @@ class Settings:
     bot_token: str
     manager_chat_id: int | None
     courier_chat_id: int | None
+    ai_provider: str
     deepseek_api_key: str
     deepseek_base_url: str
     deepseek_model: str
@@ -112,6 +113,7 @@ def load_settings() -> Settings:
         bot_token=_str("BOT_TOKEN"),
         manager_chat_id=_int("MANAGER_CHAT_ID"),
         courier_chat_id=_int("COURIER_CHAT_ID"),
+        ai_provider=(_str("AI_PROVIDER", "auto") or "auto").lower(),
         deepseek_api_key=_str("DEEPSEEK_API_KEY"),
         deepseek_base_url=_str("DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com",
         deepseek_model=_str("DEEPSEEK_MODEL", "deepseek-chat") or "deepseek-chat",

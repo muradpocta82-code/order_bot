@@ -2072,6 +2072,35 @@ async def test_feedback_and_dictionary() -> None:
                 and int(by_provider["gemini"]["fix"]) == 1,
                 str(stats),
             )
+            photo_id = await db.create_order(
+                {
+                    "id": "fb-3",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "photo",
+                    "provider": "gemini",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 1,
+                  "unit": "кг", "price": 5.25, "total": 5.25}],
+                None,
+            )
+            await db.record_parse_feedback(photo_id, client, "gemini", "fix")
+            by_source = await db.feedback_by_source(30)
+            sources = {row["source"]: row for row in by_source}
+            check(
+                "оценки по источникам заказа",
+                int(sources["photo"]["fix"]) == 1
+                and int(sources["voice"]["fix"]) >= 1,
+                str(by_source),
+            )
+            photo = await db.photo_quality(30)
+            check(
+                "качество фото-списков",
+                photo["total"] == 1.0 and photo["fix_pct"] == 100.0,
+                str(photo),
+            )
             await db.save_alias("с/к бекон", 1, 0)
             rows = await db.common_aliases()
             check(
