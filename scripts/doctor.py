@@ -158,6 +158,21 @@ def check_deployment(settings) -> bool:
         web_ok = ":8443" in listening
         print(f"{OK if web_ok else FAIL} каталог слушает порт 8443")
         problems += int(not web_ok)
+        expected = {22: "SSH", 443: "VPN (wstunnel, чужой сервис)"}
+        for port, title in expected.items():
+            open_ok = f":{port} " in listening or f":{port}\n" in listening
+            print(f"{OK if open_ok else WARN} порт {port} ({title})")
+        extra = sorted(
+            {
+                int(chunk.split(":")[-1])
+                for chunk in listening.split()
+                if chunk.startswith("*:") or chunk.startswith("0.0.0.0:")
+            }
+        )
+        known = {22, 443, 8443, 2096, 52077, 5432}
+        unknown = [port for port in extra if port not in known]
+        if unknown:
+            print(f"{WARN} незнакомые порты слушают: {unknown} — проверьте, что это ваше")
     except Exception as exc:  # noqa: BLE001
         print(f"{WARN} порты: {exc}")
 

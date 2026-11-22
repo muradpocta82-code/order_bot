@@ -1863,6 +1863,23 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def reassign_to_other_packer(self, order_id: int) -> int | None:
+        """Передаёт заказ другому упаковщику на смене (D4).
+
+        Возвращает id нового упаковщика или None, если заменить некем.
+        """
+        order = await self.get_order(order_id)
+        if order is None:
+            return None
+        current = order.get("assigned_to")
+        for row in await self.staff_on_shift("manager"):
+            candidate = int(row["user_id"])
+            if current is not None and candidate == int(current):
+                continue
+            await self.assign_order(order_id, candidate)
+            return candidate
+        return None
+
     async def pick_packer(self) -> int | None:
         """Упаковщик на смене, который дольше всех не получал заказ (по кругу)."""
         rows = await self.staff_on_shift("manager")

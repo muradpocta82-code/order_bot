@@ -1259,6 +1259,21 @@ async def test_stock_db() -> None:
         check("выключено — не списывает", consumed_off == 0)
         await db.set_setting(st.SALES_KEY, "1")
 
+        await db.add_staff(501, "manager", "Азиз")
+        await db.add_staff(502, "manager", "Бахтиёр")
+        await db.set_staff_shift(501, True)
+        await db.set_staff_shift(502, True)
+        on_shift = await db.staff_on_shift("manager")
+        check(
+            "на смене двое",
+            {int(row["user_id"]) for row in on_shift} >= {501, 502},
+            str(on_shift),
+        )
+        check(
+            "несуществующий заказ не передаётся",
+            await db.reassign_to_other_packer(999999) is None,
+        )
+
         await db.add_llm_usage("2026-11-20", "gemini", 5, 0, 0.01)
         await db.add_llm_usage("2026-11-20", "gemini", 5, 0, 0.01)
         await db.add_llm_usage("2026-11-20", "deepseek", 3, 0, 0.006)
@@ -1613,6 +1628,54 @@ def test_ai_cost() -> None:
     week = ac.weekly_line([{"calls": 100, "est_cost": 0.2}, {"calls": 50, "est_cost": 0.1}], 25)
     check("недельная строка", "150 вызовов" in week and "0.30" in week, week)
     check("без вызовов строка пустая", ac.weekly_line([], 10) == "")
+
+
+def test_eta_and_envcheck() -> None:
+    print("\n[окно прибытия и гигиена секретов]")
+    import tempfile
+
+    from orderbot import eta
+
+    now = datetime(2026, 11, 20, 15, 10, tzinfo=TZ)
+    check("время в пути по умолчанию", eta.travel_minutes("") == eta.DEFAULT_TRAVEL_MIN)
+    check("время в пути из настройки", eta.travel_minutes("25") == 25)
+    check("слишком мало — минимум", eta.travel_minutes("1") == eta.MIN_TRAVEL)
+    check("слишком много — максимум", eta.travel_minutes("9999") == eta.MAX_TRAVEL)
+    check("мусор — по умолчанию", eta.travel_minutes("скоро") == eta.DEFAULT_TRAVEL_MIN)
+    check("прибытие посчитано", eta.arrival(now, 30).strftime("%H:%M") == "15:40")
+    window = eta.window_text(now, 30)
+    check("окно с разбросом", "15:40" in window and "±15" in window, window)
+    message = eta.client_text(7, now, 30, "15-18")
+    check("клиент видит время", "15:40" in message, message)
+    check("клиент видит слот", "15-18" in message, message)
+
+    import sys as _sys
+
+    _sys.path.insert(0, str(BASE_DIR / "scripts"))
+    import env_check
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = Path(tmp) / ".env"
+        env.write_text(
+            "BOT_TOKEN=123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+            "EMPTY=\n"
+            "SHORT_KEY=abc\n"
+            "QUOTED=\"value\"\n"
+            "DUP=1\nDUP=2\n"
+            "# комментарий\n",
+            encoding="utf-8",
+        )
+        values, problems, dupes = env_check.parse_env(env)
+        check("значения прочитаны", values.get("BOT_TOKEN", "").startswith("123456"), str(list(values)))
+        check("дубль найден", "DUP" in dupes, str(dupes))
+        check("пустое значение в замечаниях", any("EMPTY" in p for p in problems), str(problems))
+        check("короткий секрет в замечаниях", any("SHORT_KEY" in p for p in problems), str(problems))
+        check("кавычки в замечаниях", any("QUOTED" in p for p in problems), str(problems))
+        check("значения не печатаются", all("value" not in p for p in problems), str(problems))
+        example = Path(tmp) / ".env.example"
+        example.write_text("BOT_TOKEN=\nNEW_KEY=\n", encoding="utf-8")
+        names = env_check.read_example(example)
+        check("имена из примера", names == ["BOT_TOKEN", "NEW_KEY"], str(names))
 
 
 async def test_db() -> None:
@@ -2395,6 +2458,7 @@ async def main() -> int:
     test_payer_role()
     test_substitute_rules()
     test_ai_cost()
+    test_eta_and_envcheck()
     test_golden_live()
     test_module_names()
     await test_db()

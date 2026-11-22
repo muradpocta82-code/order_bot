@@ -18,6 +18,10 @@ from aiogram.types import CallbackQuery, Message
 
 from .catalog import Catalog
 from .config import Settings
+from .eta import SPREAD_MIN as eta_spread
+from .eta import client_text as eta_client_text
+from .eta import travel_minutes as eta_travel
+from .eta import window_text as eta_window
 from .stock import consume_order
 from .db import Database
 from .formatting import esc, format_order, money
@@ -109,15 +113,40 @@ async def cb_courier_start(
     )
     if order.get("chef_id"):
         try:
+            minutes = eta_travel(await db.get_setting("courier_travel_min", ""))
+            now = datetime.now(settings.timezone)
+            message_text = eta_client_text(
+                order_id, now, minutes, str(order.get("delivery_time") or "")
+            )
             await _send_with_retry(
-                lambda: callback.bot.send_message(
-                    int(order["chef_id"]),
-                    f"🚚 Заказ №{order_id} в пути. Доставщик свяжется с вами.",
-                )
+                lambda: callback.bot.send_message(int(order["chef_id"]), message_text)
             )
         except Exception:
             log.warning("Не удалось уведомить клиента о доставке №%s", order_id)
     await callback.answer("В доставке")
+
+
+@router.message(Command("travel"))
+async def cmd_travel(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Сколько минут курьер обычно едет до клиента (C12): /travel 25."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        minutes = eta_travel(await db.get_setting("courier_travel_min", ""))
+        await message.answer(
+            f"⏱ Обычное время в пути: {minutes} мин (разброс ±{eta_spread()} мин).\n"
+            "Изменить: <code>/travel 25</code>"
+        )
+        return
+    minutes = eta_travel(raw)
+    await db.set_setting("courier_travel_min", str(minutes))
+    await message.answer(
+        f"⏱ Время в пути: {minutes} мин. Клиент при «Выехал» увидит: "
+        f"«курьер будет {eta_window(datetime.now(settings.timezone), minutes)}»."
+    )
 
 
 @router.callback_query(F.data.startswith("cour:pay:"))

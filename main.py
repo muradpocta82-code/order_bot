@@ -374,6 +374,32 @@ async def _escalation_loop(bot: Bot, db: Database, settings: Settings) -> None:
                 tail = ""
                 if who is not None:
                     tail = f" Назначен: {who.get('name') or who.get('user_id')}."
+                # D4: сначала пробуем передать заказ другому упаковщику на смене.
+                replacement = await db.reassign_to_other_packer(int(order["id"]))
+                if replacement is not None:
+                    fresh = await db.get_order(int(order["id"]))
+                    if fresh is not None:
+                        try:
+                            await _send_order_card(
+                                bot,
+                                replacement,
+                                fresh,
+                                "🆕 Заказ (передан от напарника)",
+                                manager_status_keyboard(int(order["id"]), "new"),
+                            )
+                        except Exception as exc:
+                            log.warning("Не удалось передать карточку: %s", exc)
+                    await bot.send_message(
+                        int(manager),
+                        f"⏰ Заказ №{order['id']} не приняли 15 минут — "
+                        f"передал другому упаковщику (id {replacement}).{tail}",
+                    )
+                    log.info(
+                        "Эскалация: заказ №%s передан упаковщику %s",
+                        order["id"],
+                        replacement,
+                    )
+                    continue
                 await bot.send_message(
                     int(manager),
                     f"⏰ Заказ №{order['id']} ждёт принятия больше 15 минут. "

@@ -856,6 +856,54 @@ async def cmd_costvoice(
     await _costs_from_text(message, status, db, settings, catalog, raw)
 
 
+@router.message(Command("assign"))
+async def cmd_assign(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Назначить заказ упаковщику вручную: /assign 12 [id] (D4)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").split()
+    if not raw or not raw[0].isdigit():
+        staff = await db.staff_on_shift("manager")
+        names = ", ".join(
+            f"{row.get('name') or row.get('user_id')} ({row.get('user_id')})"
+            for row in staff
+        ) or "никого нет на смене"
+        await message.answer(
+            "Формат: <code>/assign 12</code> — передать заказ другому упаковщику, "
+            "или <code>/assign 12 12345</code> — назначить конкретного.\n"
+            f"На смене: {esc(names)}"
+        )
+        return
+    order_id = int(raw[0])
+    order = await db.get_order(order_id)
+    if order is None:
+        await message.answer(f"Заказ №{order_id} не найден.")
+        return
+    if len(raw) > 1 and raw[1].lstrip("-").isdigit():
+        staff_id = int(raw[1])
+        staff = await db.staff_on_shift("manager")
+        if staff and staff_id not in {int(row["user_id"]) for row in staff}:
+            await message.answer(
+                "Этот сотрудник не на смене. /staff — список, /shift — смена."
+            )
+            return
+        await db.assign_order(order_id, staff_id)
+        await message.answer(f"✅ Заказ №{order_id} назначен на {staff_id}.")
+        return
+    replacement = await db.reassign_to_other_packer(order_id)
+    if replacement is None:
+        await message.answer("Некем заменить: на смене только один упаковщик.")
+        return
+    await message.answer(
+        f"✅ Заказ №{order_id} передан упаковщику {replacement}."
+    )
+
+
 @router.message(Command("payer"))
 async def cmd_payer(
     message: Message, command: CommandObject, db: Database, settings: Settings
