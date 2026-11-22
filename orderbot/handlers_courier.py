@@ -80,6 +80,35 @@ log = logging.getLogger(__name__)
 router = Router(name="orderbot_courier")
 
 
+@router.callback_query(F.data.startswith("cour:card:"))
+async def cb_courier_card(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """«Назад» из причин недоставки и переноса — вернуть карточку заказа (A11)."""
+    if not await _courier_ok(callback, settings):
+        return
+    try:
+        order_id = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or not _courier_order_allowed(order, callback.from_user.id):
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    status = str(order.get("status") or "ready")
+    title = "✅ Доставлено" if status == "done" else "🚚 Доставка"
+    await _edit_courier_card(
+        callback,
+        order,
+        title,
+        courier_status_keyboard(
+            order_id, status, str(order.get("payment_status") or "unpaid")
+        ),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("cour:start:"))
 async def cb_courier_start(
     callback: CallbackQuery, db: Database, settings: Settings

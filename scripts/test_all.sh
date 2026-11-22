@@ -22,6 +22,11 @@ fi
 
 status=0
 
+# A11: у каждой кнопки должен быть обработчик.
+echo "=== scripts/buttons_check.py ==="
+./venv/bin/python scripts/buttons_check.py \
+  || { echo "ЕСТЬ МЁРТВЫЕ КНОПКИ — деплой запрещён" >&2; status=1; }
+
 # E2: точность разбора не должна падать больше чем на 2 пункта от базовой.
 echo "=== scripts/eval_parse.py --check ==="
 ./venv/bin/python scripts/eval_parse.py --local-only --check --show-errors 3 \

@@ -1745,6 +1745,37 @@ async def test_vosk_idle() -> None:
     check("после выгрузки модели нет", transcriber._vosk_model is None)
 
 
+def test_scripts_quality() -> None:
+    print("\n[кнопки без обработчика и демо-данные]")
+    import sys as _sys
+
+    _sys.path.insert(0, str(BASE_DIR / "scripts"))
+    import buttons_check
+    import seed_demo
+
+    exact = {"cl:price", "rday:no"}
+    prefixes = ["rday:", "cour:start:"]
+    check("точное совпадение", buttons_check.is_handled("cl:price", exact, prefixes))
+    check("по префиксу", buttons_check.is_handled("rday:yes:501", exact, prefixes))
+    check("точное — начало ключа", buttons_check.is_handled("cl", exact, prefixes))
+    check("мёртвая кнопка", not buttons_check.is_handled("ghost:1", exact, prefixes))
+    check("ключ из f-строки", buttons_check.key_of("cour:start:{order_id}", True) == "cour:start:")
+    check("статичный ключ", buttons_check.key_of("cl:price", False) == "cl:price")
+
+    try:
+        seed_demo.guard("postgresql://order_bot@localhost/order_bot")
+        check("боевая база запрещена", False)
+    except SystemExit:
+        check("боевая база запрещена", True)
+    try:
+        seed_demo.guard("postgresql://order_bot@localhost/order_bot_demo")
+        check("демо-база разрешена", True)
+    except SystemExit:
+        check("демо-база разрешена", False)
+    check("клиентов в демо", len(seed_demo.CLIENTS) >= 3, str(len(seed_demo.CLIENTS)))
+    check("период демо 8 недель", seed_demo.WEEKS == 8)
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -2527,6 +2558,7 @@ async def main() -> int:
     test_ai_cost()
     test_eta_and_envcheck()
     test_suppliers_and_windows()
+    test_scripts_quality()
     test_golden_live()
     test_module_names()
     await test_db()
