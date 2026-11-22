@@ -3085,6 +3085,90 @@ async def _handle_claim(
     return True
 
 
+async def _handle_claim_credit(
+    message: Message, text: str, db: Database, settings: Settings
+) -> bool:
+    """Сумма кредит-ноты по претензии (C5-остаток).
+
+    Вызывается после кнопки «🧾 Кредит-нота»: менеджер пишет сумму, нота
+    создаётся к заказу претензии, остаток уходит в следующий счёт.
+    """
+    chat_id = message.chat.id
+    raw = await db.get_chat_state(chat_id, "claim_credit")
+    if not raw or not str(raw).isdigit():
+        return False
+    if not _is_manager(settings, message.from_user.id, chat_id):
+        return False
+    claim_id = int(raw)
+    claim = await db.get_claim(claim_id)
+    if claim is None:
+        await db.set_chat_state(chat_id, "claim_credit", "")
+        await message.answer("Претензия не найдена.")
+        return True
+    cleaned = str(text or "").replace(",", ".").replace("$", "").strip()
+    try:
+        amount = round(float(cleaned), 2)
+    except ValueError:
+        await message.answer(
+            "Нужна сумма числом, например <code>25</code>.\n"
+            f"Кредит-нота по претензии №{claim_id} не создана."
+        )
+        return True
+    if amount <= 0:
+        await message.answer("Сумма должна быть больше нуля.")
+        return True
+    order = await db.get_order(int(claim["order_id"]))
+    if order is None:
+        await db.set_chat_state(chat_id, "claim_credit", "")
+        await message.answer("Заказ претензии не найден.")
+        return True
+    await db.set_chat_state(chat_id, "claim_credit", "")
+    client_id = int(order.get("chef_id") or 0)
+    before = await db.client_book_debt(client_id)
+    result = await db.add_credit_note(
+        client_id,
+        amount,
+        f"претензия №{claim_id}",
+        order_id=int(order["id"]),
+    )
+    await db.close_claim(claim_id, "credit")
+    await db.log_event(
+        int(order["id"]),
+        "claim",
+        {"claim_id": claim_id, "decision": "credit", "amount": amount},
+        actor_id=message.from_user.id,
+    )
+    after = await db.client_book_debt(client_id)
+    lines = [
+        f"🧾 Кредит-нота на {money(amount)} по претензии №{claim_id} "
+        f"(заказ №{order['id']}) записана."
+    ]
+    if result["applied"]:
+        lines.append(
+            "Зачтено: "
+            + ", ".join(
+                f"№{target} — {money(part)}" for target, part in result["applied"]
+            )
+        )
+    if result["left"] > 0:
+        lines.append(f"💤 Остаток авансом: {money(result['left'])}")
+    lines.append(
+        f"Долг клиента по книге: {money(before['open'])} → <b>{money(after['open'])}</b>"
+    )
+    await message.answer("\n".join(lines))
+    if claim.get("user_id"):
+        try:
+            await message.bot.send_message(
+                int(claim["user_id"]),
+                f"По обращению №{claim_id} (заказ №{order['id']}): оформили кредит-ноту "
+                f"на {money(amount)} — сумма зачтена в счёте.",
+            )
+        except Exception:
+            pass
+    log.info("Кредит-нота %s по претензии %s", amount, claim_id)
+    return True
+
+
 # Отчёты и деньги — отдельный роутер.
 async def _photo_order(
     message: Message,

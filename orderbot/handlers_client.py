@@ -674,6 +674,8 @@ async def on_text(
         return
     if await _handle_claim(message, text, db, settings):
         return
+    if await _from_handlers()._handle_claim_credit(message, text, db, settings):
+        return
     if await _from_handlers()._handle_hot_take(
         message, text, db, settings, catalog
     ):

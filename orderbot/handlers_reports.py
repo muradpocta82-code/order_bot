@@ -1671,6 +1671,21 @@ async def cb_claim_action(
     if action not in titles:
         await callback.answer("Неизвестное решение", show_alert=True)
         return
+    if action == "credit":
+        # C5-остаток: сумму зачёта знает менеджер, поэтому спрашиваем её.
+        await db.set_chat_state(
+            callback.message.chat.id, "claim_credit", str(claim_id)
+        )
+        try:
+            await callback.message.edit_text(
+                f"Претензия №{claim_id} по заказу №{claim['order_id']}.\n"
+                "Сколько зачесть? Напишите сумму в долларах, например <code>25</code>.\n"
+                "Зачёт уйдёт в этот заказ, остаток — в следующий счёт."
+            )
+        except Exception:
+            pass
+        await callback.answer("Жду сумму")
+        return
     await db.close_claim(claim_id, action)
     await db.log_event(
         int(claim["order_id"]),

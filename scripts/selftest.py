@@ -430,6 +430,31 @@ async def test_ledger_db() -> None:
             )
             book_tied = await db.client_book_debt(client)
             check("долг после ноты к заказу", book_tied["open"] == 15.0, str(book_tied))
+
+            # C5-остаток: претензия → кредит-нота к заказу → претензия закрыта
+            claim_id = await db.add_claim(extra_id, client, "скол на упаковке")
+            claim_note = await db.add_credit_note(
+                client, 5.0, f"претензия №{claim_id}", order_id=extra_id
+            )
+            await db.close_claim(claim_id, "credit")
+            stored_claim = await db.get_claim(claim_id)
+            check(
+                "претензия закрыта кредитом",
+                str(stored_claim.get("status")) == "credit",
+                str(stored_claim.get("status")),
+            )
+            check(
+                "нота по претензии легла в заказ",
+                claim_note["applied"] == [(extra_id, 5.0)],
+                str(claim_note),
+            )
+            book_claim = await db.client_book_debt(client)
+            check("долг после ноты по претензии", book_claim["open"] == 10.0, str(book_claim))
+            check(
+                "зачёт в заказе виден",
+                await db.credit_applied(extra_id) == 30.0,
+                str(await db.credit_applied(extra_id)),
+            )
         finally:
             await db.close()
 
