@@ -82,6 +82,7 @@ class CatalogItem:
     category: str = ""
     stock: float | None = None
     purchase: float | None = None
+    supplier: str = ""
 
     @property
     def full_name(self) -> str:
@@ -134,6 +135,8 @@ class Catalog:
                 idx["stock"] = pos
             elif title.startswith("закуп") or title in ("purchase", "cost"):
                 idx["purchase"] = pos
+            elif title.startswith("постав") or title in ("supplier", "vendor"):
+                idx["supplier"] = pos
 
         if "name" not in idx:
             raise ValueError("В прайсе нет колонки «Название»")
@@ -163,6 +166,9 @@ class Catalog:
             category = str(row[idx["category"]] or "").strip() if "category" in idx else ""
             stock = _num(row[idx["stock"]]) if "stock" in idx else None
             purchase = _num(row[idx["purchase"]]) if "purchase" in idx else None
+            supplier = (
+                str(row[idx["supplier"]] or "").strip() if "supplier" in idx else ""
+            )
 
             item = CatalogItem(
                 id=item_id,
@@ -174,6 +180,7 @@ class Catalog:
                 category=category,
                 stock=stock,
                 purchase=purchase,
+                supplier=supplier,
             )
             catalog.add(item)
         if not catalog.items:
@@ -211,6 +218,7 @@ class Catalog:
                     "price": round(float(item.price or 0), 2),
                     "category": item.category or "",
                     "stock": item.stock,
+                    "supplier": item.supplier,
                 }
                 for item in self.items
                 if not exclude or item.id not in exclude

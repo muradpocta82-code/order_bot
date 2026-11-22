@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import re
 import secrets
 import wave
@@ -29,6 +30,7 @@ class Transcriber:
         self.ai = ai
         self._vosk_model = None
         self._vosk_lock = asyncio.Lock()
+        self._vosk_used_at = 0.0
 
     async def transcribe(self, audio_path: Path, mime_type: str = "audio/ogg") -> Transcription:
         errors: list[str] = []
@@ -90,6 +92,7 @@ class Transcriber:
         async with self._vosk_lock:
             if self._vosk_model is None:
                 self._vosk_model = await asyncio.to_thread(self._load_vosk_model)
+                self._vosk_used_at = time.time()
         return self._vosk_model
 
     def _load_vosk_model(self):
@@ -102,7 +105,27 @@ class Transcriber:
 
     async def _recognize_vosk(self, wav_path: Path) -> str:
         model = await self._get_vosk_model()
+        self._vosk_used_at = time.time()
         return await asyncio.to_thread(self._recognize_sync, model, wav_path)
+
+    async def release_idle(self, minutes: int = 10) -> bool:
+        """Выгружает офлайн-модель, если ею давно не пользовались (A5).
+
+        Модель Vosk занимает сотни мегабайт; на сервере с 2 ГБ памяти
+        держать её постоянно незачем — загрузим снова при следующем голосовом.
+        """
+        if minutes <= 0 or self._vosk_model is None:
+            return False
+        idle = time.time() - float(self._vosk_used_at or 0)
+        if idle < minutes * 60:
+            return False
+        async with self._vosk_lock:
+            if self._vosk_model is None:
+                return False
+            self._vosk_model = None
+            self._vosk_used_at = 0.0
+        log.info("Офлайн-модель Vosk выгружена после %s мин простоя", int(idle // 60))
+        return True
 
     @staticmethod
     def _recognize_sync(model, wav_path: Path) -> str:

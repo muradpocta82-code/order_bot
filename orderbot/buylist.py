@@ -64,6 +64,7 @@ async def collect(
                 "category": (item.category if item else "") or "Без категории",
                 "price": float(item.price or 0) if item else 0.0,
                 "purchase": float(item.purchase or 0) if item and item.purchase else 0.0,
+                "supplier": (item.supplier if item else "") or "",
                 "stock_left": stock_left,
                 "available": available,
                 "need": max(need, 0.0),
@@ -78,12 +79,23 @@ def as_text(rows: list[dict[str, Any]], pending: list[dict[str, Any]], day: str)
         return f"🧺 <b>Закупка на {day}</b>\n\nЗаказов нет — закупать нечего."
     total_sum = sum(row["need"] * row["purchase"] for row in rows)
     lines = [f"🧺 <b>Закупка на {day}</b>", ""]
-    category = None
-    for row in rows:
-        if row["category"] != category:
-            category = row["category"]
-            lines.append(f"<b>{category}</b>")
+    by_supplier = any(row.get("supplier") for row in rows)
+    section = None
+    for row in sorted(
+        rows,
+        key=lambda r: (
+            (r.get("supplier") or "Я без поставщика") if by_supplier else r["category"],
+            r["category"],
+            r["name"],
+        ),
+    ):
+        key = (row.get("supplier") or "Я без поставщика") if by_supplier else row["category"]
+        if key != section:
+            section = key
+            lines.append(f"<b>{key}</b>" if by_supplier else f"<b>{key}</b>")
         parts = [f"• {row['name']} — <b>{_fmt_qty(row['need'])} {row['unit']}</b>"]
+        if by_supplier and row["category"]:
+            parts.append(f"[{row['category']}]")
         if row["stock_left"]:
             parts.append(f"(заказано {_fmt_qty(row['qty'])}, остаток {_fmt_qty(row['stock_left'])})")
         if not row["available"]:
@@ -108,10 +120,11 @@ def as_xlsx(rows: list[dict[str, Any]], day: str) -> bytes:
     sheet.title = "Закупка"
     sheet.append(["Дата доставки", day])
     sheet.append([])
-    sheet.append(["Категория", "ID", "Название", "Ед.", "Заказано", "Остаток", "Закупить", "Закупка $"])
+    sheet.append(["Поставщик", "Категория", "ID", "Название", "Ед.", "Заказано", "Остаток", "Закупить", "Закупка $"])
     for row in rows:
         sheet.append(
             [
+                row.get("supplier") or "",
                 row["category"],
                 row["catalog_id"],
                 row["name"],
@@ -122,7 +135,7 @@ def as_xlsx(rows: list[dict[str, Any]], day: str) -> bytes:
                 round(row["need"] * row["purchase"], 2) if row["purchase"] else None,
             ]
         )
-    for column, width in zip("ABCDEFGH", (18, 6, 38, 6, 10, 10, 10, 12)):
+    for column, width in zip("ABCDEFGHI", (18, 18, 6, 38, 6, 10, 10, 10, 12)):
         sheet.column_dimensions[column].width = width
     buffer = BytesIO()
     workbook.save(buffer)

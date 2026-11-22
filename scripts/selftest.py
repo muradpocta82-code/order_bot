@@ -1678,6 +1678,73 @@ def test_eta_and_envcheck() -> None:
         check("имена из примера", names == ["BOT_TOKEN", "NEW_KEY"], str(names))
 
 
+def test_suppliers_and_windows() -> None:
+    print("\n[поставщики, окно правок, выгрузка модели]")
+    import shutil
+    import tempfile
+
+    from orderbot import catalogedit
+    from orderbot.formatting import edit_hint
+
+    check("нет отсечки — общая подсказка", "изменить" in edit_hint("", "2026-11-21"))
+    hint = edit_hint("18:00", "2026-11-21")
+    check("подсказка с отсечкой", "18:00" in hint and "21.11" in hint, hint)
+    check("без даты — всё равно про время", "18:00" in edit_hint("18:00", None))
+
+    tmp = Path(tempfile.mkdtemp())
+    target = tmp / "catalog.xlsx"
+    shutil.copy2(BASE_DIR / "catalog.xlsx", target)
+    check("поставщика записали", catalogedit.set_supplier(target, 4, "Ферма Ош"))
+    reloaded = Catalog.load(target)
+    check("поставщик читается", reloaded.get(4) is not None and reloaded.get(4).supplier == "Ферма Ош", str(reloaded.get(4)))
+    check("пустой поставщик чистится", catalogedit.set_supplier(target, 4, ""))
+    again = Catalog.load(target)
+    check("после очистки пусто", again.get(4) is not None and again.get(4).supplier == "", str(again.get(4)))
+    check("несуществующая позиция", not catalogedit.set_supplier(target, 999999, "Кто-то"))
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    from orderbot.buylist import as_text
+
+    rows = [
+        {"name": "Помидоры", "unit": "кг", "qty": 10, "need": 4, "price": 2,
+         "purchase": 1.2, "stock_left": 6, "available": True,
+         "category": "Овощи", "supplier": "Ферма Ош", "orders": 2},
+        {"name": "Филе", "unit": "кг", "qty": 5, "need": 1, "price": 9,
+         "purchase": 6, "stock_left": 4, "available": True,
+         "category": "Мясо", "supplier": "Мясокомбинат", "orders": 1},
+        {"name": "Лук", "unit": "кг", "qty": 3, "need": 3, "price": 1,
+         "purchase": 0.5, "stock_left": 0, "available": True,
+         "category": "Овощи", "supplier": "", "orders": 1},
+    ]
+    text_buy = as_text(rows, [], "21.11")
+    check("группа по поставщику", "Ферма Ош" in text_buy and "Мясокомбинат" in text_buy, text_buy)
+    check("позиция без поставщика в отдельной группе", "Я без поставщика" in text_buy, text_buy)
+    check("итог по закупке", "закупочным ценам" in text_buy, text_buy)
+    no_suppliers = [dict(row, supplier="") for row in rows]
+    text_plain = as_text(no_suppliers, [], "21.11")
+    check("без поставщиков — по категориям", "Овощи" in text_plain and "Мясо" in text_plain, text_plain)
+
+
+
+async def test_vosk_idle() -> None:
+    print("\n[офлайн-модель: выгрузка после простоя]")
+    from orderbot.stt import Transcriber
+
+    class _Settings:
+        vosk_model_path = None
+
+    transcriber = Transcriber(_Settings(), ai=None)
+    check("нет модели — нечего выгружать", await transcriber.release_idle(0) is False)
+    import time as _time
+
+    transcriber._vosk_model = object()
+    transcriber._vosk_used_at = _time.time()
+    check("свежая модель не выгружается", await transcriber.release_idle(10) is False)
+    transcriber._vosk_used_at = _time.time() - 3600
+    check("старая модель выгружается", await transcriber.release_idle(10) is True)
+    check("после выгрузки модели нет", transcriber._vosk_model is None)
+
+
 async def test_db() -> None:
     print("\n[6] База данных")
     with tempfile.TemporaryDirectory() as tmp:
@@ -2459,6 +2526,7 @@ async def main() -> int:
     test_substitute_rules()
     test_ai_cost()
     test_eta_and_envcheck()
+    test_suppliers_and_windows()
     test_golden_live()
     test_module_names()
     await test_db()
@@ -2471,6 +2539,7 @@ async def main() -> int:
     await test_pending_price()
     await test_ledger_db()
     await test_stock_db()
+    await test_vosk_idle()
     await test_races()
     await test_allowed_middleware()
     print("\n" + "=" * 70)

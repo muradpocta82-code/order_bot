@@ -800,6 +800,16 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _vosk_idle_loop(transcriber) -> None:
+    """Раз в 10 минут выгружает офлайн-модель Vosk, если ею не пользовались (A5)."""
+    while True:
+        await asyncio.sleep(10 * 60)
+        try:
+            await transcriber.release_idle(10)
+        except Exception as exc:
+            log.warning("Не удалось выгрузить модель Vosk: %s", exc)
+
+
 async def _llm_usage_loop(
     bot: Bot, db: Database, settings: Settings, ai: AIClient
 ) -> None:
@@ -1412,6 +1422,9 @@ async def run() -> int:
     )
     llm_usage_task = asyncio.create_task(
         _llm_usage_loop(bot, db, settings, ai), name="llm-usage"
+    )
+    vosk_idle_task = asyncio.create_task(
+        _vosk_idle_loop(transcriber), name="vosk-idle"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"

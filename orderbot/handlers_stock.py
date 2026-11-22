@@ -275,6 +275,76 @@ async def cmd_income(
     await message.answer(text)
 
 
+@router.message(Command("supplier"))
+async def cmd_supplier(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Поставщик позиции: /supplier помидоры Ош-база (B12)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        counts: dict[str, int] = {}
+        for item in catalog.items:
+            name = item.supplier or "без поставщика"
+            counts[name] = counts.get(name, 0) + 1
+        lines = ["🏷 <b>Поставщики</b>", ""]
+        for name, count in sorted(counts.items(), key=lambda pair: -pair[1]):
+            lines.append(f"• {esc(name)} — {count} поз.")
+        lines.append("")
+        lines.append(
+            "Задать: <code>/supplier помидоры Ош-база</code>\n"
+            "Закупочный лист делится по поставщикам: /buylist"
+        )
+        await message.answer("\n".join(lines))
+        return
+    parts = raw.rsplit(maxsplit=1)
+    if len(parts) != 2:
+        await message.answer(
+            "Формат: <code>/supplier помидоры Ош-база</code>\n"
+            "Пусто: <code>/supplier помидоры -</code> (убрать поставщика)"
+        )
+        return
+    query, supplier = parts
+    matches = catalog.match(query, limit=1, min_score=60)
+    if not matches:
+        await message.answer(f"Не нашёл «{esc(query)}» в прайсе.")
+        return
+    item = matches[0].item
+    value = "" if supplier.strip() in ("-", "нет", "убрать") else supplier.strip()
+    archive = price_review.backup_catalog(
+        settings.catalog_path, settings.data_dir / "price_versions", "supplier"
+    )
+    saved = catalogedit.set_supplier(settings.catalog_path, item.id, value)
+    if not saved:
+        await message.answer("Не удалось записать поставщика в прайс.")
+        return
+    catalogedit.reload_into(catalog, settings.catalog_path)
+    try:
+        catalog.dump_json(settings.data_dir / "catalog.json")
+    except Exception:
+        pass
+    if archive is not None:
+        try:
+            await db.add_price_version(str(archive), "перед /supplier", len(catalog.items))
+            for old_path in await db.prune_price_versions(5):
+                try:
+                    Path(old_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+    await message.answer(
+        f"🏷 «{esc(item.name)}»: поставщик "
+        + (f"<b>{esc(value)}</b>." if value else "убран.")
+        + "\nЗакупочный лист: /buylist"
+    )
+
+
 @router.message(Command("sub"))
 async def cmd_sub(
     message: Message,

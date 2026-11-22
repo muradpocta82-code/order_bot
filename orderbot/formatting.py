@@ -261,6 +261,27 @@ def format_order(order: dict[str, Any], title: str = "Заказ") -> str:
     return "\n".join(lines)
 
 
+def edit_hint(cutoff_raw: str | None, delivery_date: str | None) -> str:
+    """Когда ещё можно поправить заказ (C16).
+
+    Отсечка действует на заказы «на завтра», поэтому и подсказка честная:
+    до какого времени правки успевают в тот же день.
+    """
+    cutoff = str(cutoff_raw or "").strip()
+    if not cutoff:
+        return "✏️ Изменить состав можно, пока заказ не начали собирать — напишите «изменить»."
+    try:
+        day = str(delivery_date or "")[:10]
+        return (
+            f"✏️ Изменить или отменить можно до <b>{cutoff}</b> "
+            f"(доставка {day[8:10]}.{day[5:7]}) — напишите «изменить»."
+            if day
+            else f"✏️ Изменить можно до <b>{cutoff}</b> — напишите «изменить»."
+        )
+    except Exception:
+        return "✏️ Изменить состав можно, пока заказ не начали собирать."
+
+
 def format_client_order(order: dict[str, Any], title: str = "✅ Заказ") -> str:
     """Короткая карточка для клиента: только состав, сумма и доставка."""
     lines = [f"{title} №<b>{order.get('id')}</b>", ""]

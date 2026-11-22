@@ -58,6 +58,7 @@ from .extras import (
 )
 from .stock import hidden_ids, resolve as resolve_stock
 from .formatting import (
+    edit_hint,
     esc,
     format_candidates_question,
     format_catalog,
@@ -692,6 +693,12 @@ async def _advance_draft(
         else:
             text = format_client_order(order, "⚠️ Заказ сохранён")
             text += "\n\n<i>Передам упаковщику, как только появится связь.</i>"
+        try:
+            text += "\n" + edit_hint(
+                await db.get_setting("cutoff_time", ""), order.get("delivery_date")
+            )
+        except Exception:
+            log.debug("Не удалось добавить подсказку об изменении заказа")
         await _edit_panel(
             bot, chat_id, message_id, text, client_order_keyboard(order_id)
         )

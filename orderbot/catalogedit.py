@@ -94,3 +94,34 @@ def reload_into(catalog: Catalog, path: str | Path) -> Catalog:
     catalog.by_id = fresh.by_id
     catalog._phrases = fresh._phrases
     return catalog
+
+
+def set_supplier(path: str | Path, catalog_id: int, supplier: str) -> bool:
+    """Пишет поставщика позиции в прайс (B12). Колонку создаёт при необходимости."""
+    path = Path(path)
+    workbook = load_workbook(path)
+    worksheet = workbook.worksheets[0]
+    header = [str(cell.value or "").strip() for cell in worksheet[1]]
+    lowered = [normalize(title) for title in header]
+    id_col = _column(lowered, "id", "код", "артикул")
+    supplier_col = _column(lowered, "постав", "supplier", "vendor")
+    if id_col is None:
+        workbook.close()
+        return False
+    if supplier_col is None:
+        supplier_col = len(header) + 1
+        cell = worksheet.cell(row=1, column=supplier_col)
+        cell.value = "Поставщик"
+    for row in range(2, worksheet.max_row + 1):
+        raw = worksheet.cell(row=row, column=id_col).value
+        try:
+            row_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if row_id == int(catalog_id):
+            worksheet.cell(row=row, column=supplier_col).value = str(supplier)[:100]
+            workbook.save(path)
+            workbook.close()
+            return True
+    workbook.close()
+    return False
