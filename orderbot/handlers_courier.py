@@ -388,7 +388,7 @@ async def cb_courier_done(
 
         pdf_path = settings.data_dir / f"invoice_{order_id}.pdf"
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        build_invoice(order, pdf_path)
+        build_invoice(order, pdf_path, await db.order_credits(order_id))
         recipients: list[int] = []
         for chat in (order.get("chef_id"), manager):
             if chat:

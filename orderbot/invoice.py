@@ -8,7 +8,11 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
-def build_invoice(order: dict[str, Any], target: Path) -> Path:
+def build_invoice(
+    order: dict[str, Any],
+    target: Path,
+    credits: list[dict[str, Any]] | None = None,
+) -> Path:
     from fpdf import FPDF
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
@@ -56,5 +60,37 @@ def build_invoice(order: dict[str, Any], target: Path) -> Path:
         str(order.get("payment_method")), str(order.get("payment_method") or "")
     )
     pdf.cell(0, 6, f"Оплата: {method}", new_x="LMARGIN", new_y="NEXT")
+
+    # B4: отметка об оплате и история зачётов — документ говорит сам за себя.
+    total = round(float(order.get("total") or 0), 2)
+    paid = round(float(order.get("paid_amount") or 0), 2)
+    credited = round(sum(float(row.get("amount") or 0) for row in credits or []), 2)
+    left = round(max(0.0, total - paid - credited), 2)
+    pdf.cell(
+        0, 6, f"Оплачено: ${paid:.2f} · Зачтено: ${credited:.2f} · Остаток: ${left:.2f}",
+        new_x="LMARGIN", new_y="NEXT",
+    )
+    if credits:
+        pdf.ln(2)
+        pdf.set_font("DejaVu", "B", 9)
+        pdf.cell(0, 6, "История зачётов", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("DejaVu", "", 9)
+        for row in credits:
+            day = str(row.get("created_at") or "")[:16]
+            reason = str(row.get("reason") or "")[:60]
+            pdf.cell(
+                0, 5,
+                f"Кредит-нота №{row.get('credit_note_id')} · {day} · "
+                f"${float(row.get('amount') or 0):.2f} · {reason}",
+                new_x="LMARGIN", new_y="NEXT",
+            )
+    if left <= 0.005 and total > 0:
+        pdf.ln(3)
+        pdf.set_font("DejaVu", "B", 12)
+        pdf.cell(0, 8, "ОПЛАЧЕНО", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.ln(3)
+        pdf.set_font("DejaVu", "B", 10)
+        pdf.cell(0, 8, f"К ОПЛАТЕ: ${left:.2f}", new_x="LMARGIN", new_y="NEXT")
     pdf.output(str(target))
     return target

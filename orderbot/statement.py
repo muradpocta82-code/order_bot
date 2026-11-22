@@ -136,6 +136,15 @@ def build_statement(
         0, 8, f"Сальдо на конец периода: ${numbers['balance']:.2f}",
         new_x="LMARGIN", new_y="NEXT",
     )
+    if numbers["balance"] <= 0.005:
+        pdf.set_font("DejaVu", "B", 11)
+        pdf.cell(0, 7, "Расчёты закрыты", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_font("DejaVu", "B", 11)
+        pdf.cell(
+            0, 7, f"К оплате: ${numbers['balance']:.2f}", new_x="LMARGIN", new_y="NEXT"
+        )
+    pdf.set_font("DejaVu", "", 10)
 
     if credit_notes:
         pdf.ln(3)

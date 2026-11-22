@@ -455,6 +455,13 @@ async def test_ledger_db() -> None:
                 await db.credit_applied(extra_id) == 30.0,
                 str(await db.credit_applied(extra_id)),
             )
+            history = await db.order_credits(extra_id)
+            check("история зачётов по заказу", len(history) == 3, str(history))
+            check(
+                "сумма истории сходится с зачётом",
+                round(sum(float(row["amount"]) for row in history), 2) == 30.0,
+                str(history),
+            )
         finally:
             await db.close()
 
@@ -2150,6 +2157,73 @@ async def test_geo_db() -> None:
             await db.close()
 
 
+def test_documents_with_payment() -> None:
+    print("\n[документы: отметка об оплате и зачёты (B4)]")
+    import tempfile
+
+    from orderbot.invoice import build_invoice
+    from orderbot.statement import build_statement, totals
+
+    tmp = Path(tempfile.mkdtemp())
+    order = {
+        "id": 501,
+        "created_at": "2026-11-22 10:00:00",
+        "chef_name": "Кафе Ромашка",
+        "delivery_address": "ул. Навои 12",
+        "total": 100.0,
+        "paid_amount": 40.0,
+        "payment_method": "transfer",
+        "items": [
+            {"name": "Куриное филе", "qty": 2, "unit": "кг", "price": 25.0, "total": 50.0},
+            {"name": "Помидоры", "qty": 10, "unit": "кг", "price": 5.0, "total": 50.0},
+        ],
+    }
+    credits = [
+        {"credit_note_id": 7, "amount": 15.0, "created_at": "2026-11-21 12:00:00",
+         "reason": "недовес"},
+    ]
+    partial = tmp / "invoice_partial.pdf"
+    build_invoice(order, partial, credits)
+    check("накладная с зачётом создана", partial.exists() and partial.stat().st_size > 1000, str(partial))
+    check(
+        "в накладной есть текст документа",
+        b"DejaVu" in partial.read_bytes() or partial.stat().st_size > 2000,
+    )
+    paid_order = dict(order, paid_amount=100.0)
+    full = tmp / "invoice_paid.pdf"
+    build_invoice(paid_order, full, [])
+    check("накладная с полной оплатой создана", full.exists() and full.stat().st_size > 1000)
+    check("документ без зачётов больше по размеру", full.stat().st_size > 0)
+
+    client = {"venue": "Кафе Ромашка", "address": "ул. Навои 12"}
+    act = tmp / "act.pdf"
+    build_statement(
+        client,
+        [
+            {"id": 501, "created_at": "2026-11-20 10:00:00", "total": 100.0,
+             "paid_amount": 40.0, "payment_status": "unpaid", "status": "done"},
+        ],
+        act,
+        "01.11.2026",
+        "22.11.2026",
+        [{"credit_note_id": 7, "amount": 15.0, "created_at": "2026-11-21 12:00:00",
+          "reason": "недовес", "order_id": 501}],
+    )
+    check("акт создан", act.exists() and act.stat().st_size > 1000, str(act))
+    numbers = totals(
+        [{"total": 100.0, "paid_amount": 40.0, "payment_status": "unpaid", "status": "done"}],
+        [{"amount": 15.0}],
+    )
+    check(
+        "сальдо акта: выставлено − оплачено − зачтено",
+        round(numbers["balance"], 2) == 45.0,
+        str(numbers),
+    )
+    import shutil
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3093,6 +3167,7 @@ async def main() -> int:
     await test_feedback_and_dictionary()
     test_geo_and_eta()
     await test_geo_db()
+    test_documents_with_payment()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

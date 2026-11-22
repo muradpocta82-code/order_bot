@@ -2103,6 +2103,18 @@ class Database:
         row = await cursor.fetchone()
         return max(0.0, round(float(row["s"] or 0), 2)) if row else 0.0
 
+    async def order_credits(self, order_id: int) -> list[dict[str, Any]]:
+        """История зачётов по заказу: какие кредит-ноты и на сколько (B4)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT ca.credit_note_id, ca.amount, ca.created_at, cn.reason "
+            "FROM credit_applications ca "
+            "JOIN credit_notes cn ON cn.id = ca.credit_note_id "
+            "WHERE ca.order_id = %s ORDER BY ca.created_at, ca.id",
+            (int(order_id),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def credit_applied(self, order_id: int) -> float:
         """Сколько зачтено кредит-нотами по конкретному заказу."""
         assert self.conn is not None
