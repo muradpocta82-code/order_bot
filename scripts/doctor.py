@@ -162,13 +162,18 @@ def check_deployment(settings) -> bool:
         for port, title in expected.items():
             open_ok = f":{port} " in listening or f":{port}\n" in listening
             print(f"{OK if open_ok else WARN} порт {port} ({title})")
-        extra = sorted(
-            {
-                int(chunk.split(":")[-1])
-                for chunk in listening.split()
-                if chunk.startswith("*:") or chunk.startswith("0.0.0.0:")
-            }
-        )
+        ports: set[int] = set()
+        for line in listening.splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            local = fields[3]
+            if local.startswith("127.") or local in ("::1", "[::1]", "::1:*"):
+                continue  # локальные службы (DNS и т.п.) не считаем
+            tail = local.rsplit(":", 1)[-1]
+            if tail.isdigit():
+                ports.add(int(tail))
+        extra = sorted(ports)
         known = {22, 443, 8443, 2096, 52077, 5432}
         unknown = [port for port in extra if port not in known]
         if unknown:
