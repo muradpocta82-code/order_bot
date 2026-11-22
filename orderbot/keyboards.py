@@ -350,6 +350,22 @@ def client_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def feedback_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Как распознан голос/фото: верно или поправить (E8)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Верно", callback_data=f"pf:{order_id}:ok"
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Поправить", callback_data=f"pf:{order_id}:fix"
+                ),
+            ]
+        ]
+    )
+
+
 def edit_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

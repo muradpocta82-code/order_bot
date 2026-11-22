@@ -84,6 +84,7 @@ from .keyboards import (
     client_reply_keyboard,
     broadcast_confirm_keyboard,
     client_order_keyboard,
+    feedback_keyboard,
     contact_keyboard,
     location_keyboard,
     location_pick_keyboard,
@@ -187,6 +188,8 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /pricenew — цены на завтра из закупки
 /markup — наценки по категориям
 /quality — качество разбора
+/aliases — общий словарь: /aliases
+/alias_add — добавить фразу: /alias_add с/к бекон = бекон
 /discount — скидка клиенту: /discount 123456789 5
 /cprice — особая цена: /cprice 123456789 помидоры 1.10
 /venues — точки клиента: /venues 123456789
@@ -444,6 +447,43 @@ async def _warn_quantity(
         await message.answer("\n".join(lines))
     except Exception:
         log.debug("Не удалось отправить предупреждение о количестве", exc_info=True)
+
+
+@router.callback_query(F.data.startswith("pf:"))
+async def cb_parse_feedback(callback: CallbackQuery, db: Database) -> None:
+    """Оценка распознавания голоса/фото (E8)."""
+    try:
+        _, raw_order, verdict = callback.data.split(":")
+        order_id = int(raw_order)
+    except (IndexError, ValueError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if int(order.get("chef_id") or 0) != int(callback.from_user.id):
+        await callback.answer("Это не ваш заказ", show_alert=True)
+        return
+    verdict = "fix" if verdict == "fix" else "ok"
+    await db.record_parse_feedback(
+        order_id,
+        int(callback.from_user.id),
+        str(order.get("parse_provider") or order.get("source") or ""),
+        verdict,
+    )
+    if verdict == "ok":
+        text = f"Спасибо! Заказ №{order_id} понят верно."
+    else:
+        text = (
+            f"Заказ №{order_id}. Напишите, что поправить, одним сообщением: "
+            "«убери помидоры», «вместо 2 кг — 3 кг филе»."
+        )
+    try:
+        await callback.message.edit_text(text)
+    except Exception:
+        pass
+    await callback.answer("Записал")
 
 
 @router.callback_query(F.data.startswith("loc:"))
@@ -798,6 +838,16 @@ async def _advance_draft(
         await _edit_panel(
             bot, chat_id, message_id, text, client_order_keyboard(order_id)
         )
+        # E8: для голоса и фото спрашиваем, верно ли распознан заказ.
+        if str(fresh.get("source") or "") in ("voice", "photo"):
+            try:
+                await bot.send_message(
+                    chat_id,
+                    "🎤 Как я понял заказ? Если ошибся — поправьте.",
+                    reply_markup=feedback_keyboard(order_id),
+                )
+            except Exception:
+                log.debug("Не удалось спросить про качество распознавания")
         try:
             await db.set_order_cards(order_id, chef_card=message_id)
         except Exception:

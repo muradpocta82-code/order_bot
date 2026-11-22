@@ -238,6 +238,32 @@ class Database:
             if chef_id != 0 and getattr(self, "alias_auto_global", False):
                 await self._promote_alias(phrase, int(catalog_id), now)
 
+    async def common_aliases(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Общий словарь: фразы, которые понимают все повара (E3)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT a.phrase, a.catalog_id, a.hits, "
+            "(SELECT COUNT(DISTINCT chef_id) FROM aliases "
+            "  WHERE phrase = a.phrase AND chef_id != 0) AS chefs "
+            "FROM aliases a WHERE a.chef_id = 0 "
+            "ORDER BY a.hits DESC, a.phrase LIMIT %s",
+            (int(limit),),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def delete_alias(self, phrase: str, chef_id: int = 0) -> bool:
+        """Удаляет фразу из словаря (общий по умолчанию)."""
+        assert self.conn is not None
+        phrase = " ".join(str(phrase).lower().replace("ё", "е").split())
+        if not phrase:
+            return False
+        cursor = await self.conn.execute(
+            "DELETE FROM aliases WHERE chef_id = %s AND phrase = %s",
+            (int(chef_id), phrase),
+        )
+        await self.conn.commit()
+        return cursor.rowcount == 1
+
     async def _promote_alias(
         self, phrase: str, catalog_id: int, now: str
     ) -> None:
@@ -653,8 +679,8 @@ class Database:
                 "INSERT INTO orders(created_at, chef_id, chef_name, chef_username, manager_chat_id, "
                 "delivery_date, delivery_time, comment, total, status, source, raw_text, questions, "
                 "delivery_address, delivery_phone, payment_method, payment_status, delivery_pin, "
-                "location_id, location_name) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)" + add_id,
+                "location_id, location_name, parse_provider) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)" + add_id,
                 (
                     created_at,
                     int(draft["user_id"]),
@@ -676,6 +702,7 @@ class Database:
                     f"{secrets.randbelow(9000) + 1000}",
                     int(draft["location_id"]) if draft.get("location_id") else None,
                     draft.get("location_name"),
+                    draft.get("provider"),
                 ),
             )
             if self.is_postgres:
@@ -1007,6 +1034,45 @@ class Database:
             "failed": failed,
             "claims": claims,
         }
+
+    async def record_parse_feedback(
+        self,
+        order_id: int,
+        chef_id: int,
+        provider: str,
+        verdict: str,
+    ) -> None:
+        """Оценка распознавания: «ok» или «fix» (E8). Повтор — перезапись."""
+        assert self.conn is not None
+        await self.conn.execute(
+            "INSERT INTO parse_feedback(order_id, chef_id, provider, verdict) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (order_id) DO UPDATE "
+            "SET verdict = EXCLUDED.verdict, provider = EXCLUDED.provider, "
+            "created_at = now()",
+            (
+                int(order_id),
+                int(chef_id),
+                str(provider or "")[:40],
+                "fix" if str(verdict) == "fix" else "ok",
+            ),
+        )
+        await self.conn.commit()
+
+    async def feedback_stats(self, days: int = 30) -> list[dict[str, Any]]:
+        """Доля «поправить» по провайдерам распознавания (E8)."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(NULLIF(provider, ''), 'неизвестно') AS provider, "
+            "COALESCE(SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END), 0) AS ok, "
+            "COALESCE(SUM(CASE WHEN verdict = 'fix' THEN 1 ELSE 0 END), 0) AS fix "
+            "FROM parse_feedback WHERE created_at >= %s "
+            "GROUP BY provider ORDER BY COUNT(*) DESC",
+            (since,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
     async def parse_stats(self, days: int = 30) -> dict[str, Any]:
         assert self.conn is not None

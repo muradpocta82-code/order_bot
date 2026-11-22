@@ -1999,6 +1999,89 @@ async def test_locations_db() -> None:
             await db.close()
 
 
+async def test_feedback_and_dictionary() -> None:
+    print("\n[оценка распознавания и общий словарь (E8, E3)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9401
+            await db.ensure_user(client, "Голосовой Тест")
+            order_id = await db.create_order(
+                {
+                    "id": "fb-1",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "voice",
+                    "provider": "vosk",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 1,
+                  "unit": "кг", "price": 5.25, "total": 5.25}],
+                None,
+            )
+            order = await db.get_order(order_id)
+            check(
+                "провайдер сохранён в заказе",
+                order.get("parse_provider") == "vosk",
+                str(order.get("parse_provider")),
+            )
+            await db.record_parse_feedback(order_id, client, "vosk", "fix")
+            await db.record_parse_feedback(order_id, client, "vosk", "ok")
+            stats = await db.feedback_stats(30)
+            vosk = [row for row in stats if row["provider"] == "vosk"]
+            check(
+                "повтор перезаписал оценку",
+                bool(vosk) and int(vosk[0]["ok"]) == 1 and int(vosk[0]["fix"]) == 0,
+                str(stats),
+            )
+            second = await db.create_order(
+                {
+                    "id": "fb-2",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-24",
+                    "delivery_time": "09:00–12:00",
+                    "source": "voice",
+                    "provider": "gemini",
+                },
+                [{"catalog_id": 4, "name": "Куриное филе", "qty": 1,
+                  "unit": "кг", "price": 5.25, "total": 5.25}],
+                None,
+            )
+            await db.record_parse_feedback(second, client, "gemini", "fix")
+            stats = await db.feedback_stats(30)
+            by_provider = {row["provider"]: row for row in stats}
+            check(
+                "оценки разделены по провайдерам",
+                int(by_provider["vosk"]["fix"]) == 0
+                and int(by_provider["gemini"]["fix"]) == 1,
+                str(stats),
+            )
+            await db.save_alias("с/к бекон", 1, 0)
+            rows = await db.common_aliases()
+            check(
+                "фраза в общем словаре",
+                any(row["phrase"] == "с/к бекон" and int(row["catalog_id"]) == 1 for row in rows),
+                str(rows),
+            )
+            aliases = await db.get_aliases(client)
+            check("общий словарь виден повару", aliases.get("с/к бекон") == 1, str(aliases))
+            check("удаление фразы", await db.delete_alias("с/к бекон", 0))
+            check("повторное удаление — False", not await db.delete_alias("с/к бекон", 0))
+            rows = await db.common_aliases()
+            check("словарь очищен", all(row["phrase"] != "с/к бекон" for row in rows), str(rows))
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -2939,6 +3022,7 @@ async def main() -> int:
     await test_client_pricing_db()
     test_locations()
     await test_locations_db()
+    await test_feedback_and_dictionary()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

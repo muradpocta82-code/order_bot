@@ -68,7 +68,106 @@ async def cmd_quality(message: Message, db: Database, settings: Settings) -> Non
                 f"{row['n']} зак., вопросов {avg_q:.1f}, "
                 f"{avg_ms / 1000:.1f} с\n"
             )
+    feedback = await db.feedback_stats(30)
+    if feedback:
+        text += "\n\n🎤 <b>Распознавание голоса и фото</b>\n"
+        for row in feedback:
+            ok = int(row.get("ok") or 0)
+            fix = int(row.get("fix") or 0)
+            total = ok + fix
+            share = fix / total * 100 if total else 0.0
+            name = str(row.get("provider") or "неизвестно")
+            if name in ("gemini", "vosk"):
+                name = {"gemini": "Gemini", "vosk": "Vosk"}[name]
+            text += f"• {esc(name)}: поправили {fix} из {total} ({share:.0f}%)\n"
     await message.answer(text, reply_markup=manager_back_keyboard())
+
+
+@router.message(Command("aliases"))
+async def cmd_aliases(
+    message: Message, db: Database, settings: Settings, catalog: Catalog
+) -> None:
+    """Общий словарь: что понимают все повара (E3)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    rows = await db.common_aliases(40)
+    if not rows:
+        await message.answer(
+            "Общий словарь пуст. Он наполняется сам: когда три разных повара "
+            "выбирают одну и ту же позицию для одной фразы.\n"
+            "Добавить вручную: <code>/alias_add с/к бекон = бекон</code>"
+        )
+        return
+    lines = ["📖 <b>Общий словарь</b>", ""]
+    for row in rows:
+        item = catalog.get(int(row["catalog_id"]))
+        name = item.name if item else f"id{row['catalog_id']}"
+        chefs = int(row["chefs"] or 0)
+        lines.append(
+            f"• «{esc(row['phrase'])}» → {esc(name)}"
+            + (f" · поваров {chefs}" if chefs else "")
+        )
+    lines.append("")
+    lines.append("Удалить: <code>/alias_del фраза</code>")
+    await message.answer("\n".join(lines), reply_markup=manager_back_keyboard())
+
+
+@router.message(Command("alias_add"))
+async def cmd_alias_add(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Добавить фразу в общий словарь: /alias_add с/к бекон = бекон (E3)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    raw = (command.args or "").strip()
+    if "=" not in raw:
+        await message.answer(
+            "Формат: <code>/alias_add фраза = позиция</code>\n"
+            "Пример: /alias_add с/к бекон = бекон"
+        )
+        return
+    phrase, target = raw.split("=", 1)
+    phrase = " ".join(phrase.lower().replace("ё", "е").split())
+    if not phrase:
+        await message.answer("Пустая фраза. Формат: <code>/alias_add фраза = позиция</code>")
+        return
+    match = catalog.match(target.strip(), limit=1, min_score=55)
+    if not match:
+        await message.answer("Такой позиции нет в прайсе.")
+        return
+    item = match[0].item
+    await db.save_alias(phrase, item.id, 0)
+    await message.answer(
+        f"📖 «{esc(phrase)}» → «{esc(item.name)}» в общем словаре. "
+        "Теперь понимают все повара."
+    )
+
+
+@router.message(Command("alias_del"))
+async def cmd_alias_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Убрать фразу из общего словаря (E3)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    phrase = " ".join((command.args or "").lower().replace("ё", "е").split())
+    if not phrase:
+        await message.answer("Формат: <code>/alias_del с/к бекон</code>")
+        return
+    removed = await db.delete_alias(phrase, 0)
+    if removed:
+        await message.answer(f"🗑 «{esc(phrase)}» убрана из общего словаря.")
+    else:
+        await message.answer(
+            "Такой фразы в общем словаре нет. Список: /aliases"
+        )
 
 
 @router.message(Command("stop"))
