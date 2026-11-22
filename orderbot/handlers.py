@@ -74,6 +74,7 @@ from .formatting import (
     split_message,
 )
 from .keyboards import (
+    problem_keyboard,
     alt_keyboard,
     candidates_keyboard,
     client_back_keyboard,
@@ -162,6 +163,13 @@ from .notify import (
 )
 
 from .texts import MANAGER_ONLY_TEXT, RATE_LIMIT_TEXT  # noqa: E402
+from .survey import (  # noqa: E402
+    claim_text as survey_claim_text,
+    details_prompt as survey_details_prompt,
+    problem_label as survey_problem_label,
+    problem_prompt as survey_problem_prompt,
+    thanks_text as survey_thanks,
+)
 
 MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 
@@ -2889,6 +2897,117 @@ async def cb_problem(callback: CallbackQuery, db: Database, settings: Settings) 
     )
 
 
+@router.callback_query(F.data.startswith("srv:"))
+async def cb_survey(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Ответ на опрос через сутки (C5)."""
+    try:
+        _, action, raw_id = callback.data.split(":")
+        order_id = int(raw_id)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    if str(order.get("chef_id") or "") != str(callback.from_user.id):
+        await callback.answer("Это опрос другого клиента", show_alert=True)
+        return
+    if action == "ok":
+        await callback.answer()
+        try:
+            await callback.message.edit_text(survey_thanks(), reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await db.set_setting(f"survey_ok:{order_id}", "1")
+        return
+    await db.set_chat_state(callback.message.chat.id, "claim_problem", str(order_id))
+    await callback.answer()
+    try:
+        await callback.message.edit_text(
+            survey_problem_prompt(order_id), reply_markup=problem_keyboard(order_id)
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            survey_problem_prompt(order_id), reply_markup=problem_keyboard(order_id)
+        )
+
+
+@router.callback_query(F.data.startswith("srvp:"))
+async def cb_survey_problem(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Клиент выбрал тип проблемы — создаём претензию и просим детали (C5)."""
+    try:
+        _, raw_id, code = callback.data.split(":", 2)
+        order_id = int(raw_id)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    order = await db.get_order(order_id)
+    if order is None or str(order.get("chef_id") or "") != str(callback.from_user.id):
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    label = survey_problem_label(code)
+    claim_id = await db.add_claim(
+        order_id, callback.from_user.id, survey_claim_text(label, "")
+    )
+    await db.set_chat_state(callback.message.chat.id, "claim", str(order_id))
+    await db.set_chat_state(callback.message.chat.id, "claim_id", str(claim_id))
+    await callback.answer()
+    try:
+        await callback.message.edit_text(survey_details_prompt(label), reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(survey_details_prompt(label))
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                f"⚠️ Претензия №{claim_id} по заказу №{order_id} "
+                f"от {esc(order.get('chef_name') or '')}: {label}. Ждём описание.",
+                reply_markup=claim_actions_keyboard(claim_id),
+            )
+        except Exception:
+            pass
+
+
+async def _handle_hot_take(
+    message: Message, text: str, db: Database, settings: Settings, catalog: Catalog
+) -> bool:
+    """Клиент написал количество после «Взять» в горячем предложении (B14)."""
+    raw = await db.get_chat_state(message.chat.id, "hot_take")
+    if not raw:
+        return False
+    await db.set_chat_state(message.chat.id, "hot_take", "")
+    try:
+        catalog_id, price_raw = raw.split(":", 1)
+        item = catalog.get(int(catalog_id))
+        price = float(price_raw)
+    except (ValueError, AttributeError):
+        return False
+    if item is None:
+        return False
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await message.bot.send_message(
+                int(manager),
+                f"🔥 {message.from_user.full_name} (id {message.from_user.id}) "
+                f"хочет «{esc(item.name)}» по {money(price)}: {esc(text[:200])}\n"
+                "Оформить: /for " + str(message.from_user.id) + " " + esc(text[:200]),
+            )
+        except Exception:
+            pass
+    await message.answer(
+        "Передал менеджеру: он подтвердит количество и доставку. "
+        "Если нужно ещё что-то — просто напишите заказ."
+    )
+    return True
+
+
 async def _handle_claim(
     message: Message, text: str, db: Database, settings: Settings
 ) -> bool:
@@ -2901,8 +3020,42 @@ async def _handle_claim(
     order = await db.get_order(int(raw_order))
     if order is None:
         return False
+    pending_claim = await db.get_chat_state(chat_id, "claim_id")
+    photo = bool(message.photo)
+    body = str(text or "").strip() or ("фото приложено" if photo else "")
+    if pending_claim and str(pending_claim).isdigit():
+        # Претензия уже создана из опроса — дописываем детали (C5).
+        await db.set_chat_state(chat_id, "claim_id", "")
+        claim_id = int(pending_claim)
+        await db.append_claim_text(claim_id, body)
+        await message.answer(
+            f"Записал в обращение №{claim_id}. Менеджер свяжется с вами."
+        )
+        manager = order.get("manager_chat_id") or settings.manager_chat_id
+        if manager:
+            try:
+                caption = (
+                    f"⚠️ Дополнение к претензии №{claim_id} по заказу "
+                    f"№{order['id']}: {body[:600]}"
+                )
+                if photo:
+                    await message.bot.send_photo(
+                        int(manager),
+                        message.photo[-1].file_id,
+                        caption=caption,
+                        reply_markup=claim_actions_keyboard(claim_id),
+                    )
+                else:
+                    await message.bot.send_message(
+                        int(manager),
+                        caption,
+                        reply_markup=claim_actions_keyboard(claim_id),
+                    )
+            except Exception:
+                pass
+        return True
     claim_id = await db.add_claim(
-        int(order["id"]), message.from_user.id, text
+        int(order["id"]), message.from_user.id, body
     )
     await message.answer(
         f"Принял обращение №{claim_id} по заказу №{order['id']}. "
@@ -2910,13 +3063,22 @@ async def _handle_claim(
     )
     manager = order.get("manager_chat_id") or settings.manager_chat_id
     if manager:
+        caption = (
+            f"⚠️ Претензия №{claim_id} по заказу №{order['id']} "
+            f"от {esc(order.get('chef_name') or '')}:\n{esc(body[:800])}"
+        )
         try:
-            await message.bot.send_message(
-                int(manager),
-                f"⚠️ Претензия №{claim_id} по заказу №{order['id']} "
-                f"от {esc(order.get('chef_name') or '')}:\n{esc(text[:800])}",
-                reply_markup=claim_actions_keyboard(claim_id),
-            )
+            if photo:
+                await message.bot.send_photo(
+                    int(manager),
+                    message.photo[-1].file_id,
+                    caption=caption,
+                    reply_markup=claim_actions_keyboard(claim_id),
+                )
+            else:
+                await message.bot.send_message(
+                    int(manager), caption, reply_markup=claim_actions_keyboard(claim_id)
+                )
         except Exception:
             pass
     log.info("Претензия №%s по заказу №%s", claim_id, order["id"])

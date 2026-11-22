@@ -674,6 +674,10 @@ async def on_text(
         return
     if await _handle_claim(message, text, db, settings):
         return
+    if await _from_handlers()._handle_hot_take(
+        message, text, db, settings, catalog
+    ):
+        return
     if len(text) < 2:
         await message.answer("Напишите заказ, например: «2 кг куриного филе, завтра».")
         return

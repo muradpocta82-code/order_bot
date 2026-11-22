@@ -756,6 +756,56 @@ def client_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 
+def hot_offer_keyboard(catalog_id: int, price: float) -> InlineKeyboardMarkup:
+    """Горячее предложение: одна кнопка «Взять» (B14)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🛒 Взять",
+                    callback_data=f"hot:{catalog_id}:{price:g}",
+                )
+            ]
+        ]
+    )
+
+
+def survey_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Опрос через сутки после доставки (C5)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Всё хорошо", callback_data=f"srv:ok:{order_id}"
+                ),
+                InlineKeyboardButton(
+                    text="⚠️ Есть проблема", callback_data=f"srv:bad:{order_id}"
+                ),
+            ]
+        ]
+    )
+
+
+def problem_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Тип проблемы в заказе (C5)."""
+    from .survey import PROBLEM_TYPES
+
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for code, label in PROBLEM_TYPES:
+        row.append(
+            InlineKeyboardButton(
+                text=label, callback_data=f"srvp:{order_id}:{code}"
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def claim_actions_keyboard(claim_id: int) -> InlineKeyboardMarkup:
     """Решение по претензии: заменить, кредит-нота или отклонить."""
     rows = [

@@ -1304,6 +1304,8 @@ async def test_stock_db() -> None:
         check("после снятия пусто", await db.payers_for(123456789) == [])
         check("повторное снятие — False", not await db.remove_payer(987654321))
 
+        check("окно опроса читается", isinstance(await db.delivered_between(20, 48), list))
+        check("покупатели позиции читаются", isinstance(await db.item_buyers(4, 90), list))
         check("оценки бригады читаются", isinstance(await db.staff_ratings(7), list))
         check("оценки заказов читаются", isinstance(await db.order_ratings(7), list))
 
@@ -1774,6 +1776,52 @@ def test_scripts_quality() -> None:
         check("демо-база разрешена", False)
     check("клиентов в демо", len(seed_demo.CLIENTS) >= 3, str(len(seed_demo.CLIENTS)))
     check("период демо 8 недель", seed_demo.WEEKS == 8)
+
+
+def test_delivery_survey() -> None:
+    print("\n[опрос после доставки: тексты и типы проблем]")
+    from orderbot import survey
+
+    codes = [code for code, _label in survey.PROBLEM_TYPES]
+    check("четыре типа проблем", len(survey.PROBLEM_TYPES) == 4, str(codes))
+    check("недовес есть", "weight" in codes, str(codes))
+    check("качество есть", "quality" in codes, str(codes))
+    check("не привезли есть", "missing" in codes, str(codes))
+    check("другое есть", "other" in codes, str(codes))
+    check("подпись типа", survey.problem_label("weight") == "⚖️ Недовес", survey.problem_label("weight"))
+    check("неизвестный тип — «другое»", survey.problem_label("???") == "другое")
+    check("опрос содержит номер", "№7" in survey.survey_text(7), survey.survey_text(7))
+    check("благодарность", "Спасибо" in survey.thanks_text())
+    check("вопрос про тип", "№7" in survey.problem_prompt(7))
+    check("просьба о деталях", "фото" in survey.details_prompt("⚖️ Недовес"))
+    check("текст претензии с деталями", "Недовес: мало" in survey.claim_text("Недовес", "мало"), survey.claim_text("Недовес", "мало"))
+    check("без деталей — только тип", survey.claim_text("Недовес", "").startswith("Опрос"))
+    check("подсказка про кнопки", "Всё хорошо" in survey.survey_note())
+
+
+def test_hot_offer() -> None:
+    print("\n[горячее предложение: разбор и тексты]")
+    from orderbot import hot
+
+    offer = hot.parse_offer("помидоры 1.10 до 18:00")
+    check("позиция и цена", offer is not None and offer.price == 1.1, str(offer))
+    check("время до", offer is not None and offer.until == "18:00", str(offer))
+    check("без времени", hot.parse_offer("огурцы 0,90").until == "")
+    check("цена с запятой", hot.parse_offer("огурцы 0,90").price == 0.9)
+    check("позиция из двух слов", hot.parse_offer("сыр гауда 12.50 до 9:30").phrase == "сыр гауда")
+    check("без цены — отказ", hot.parse_offer("помидоры до 18:00") is None)
+    check("цена ноль — отказ", hot.parse_offer("помидоры 0") is None)
+    check("плохое время — отказ", hot.parse_offer("помидоры 1.10 до 25:99") is None)
+    check("пусто — отказ", hot.parse_offer("") is None)
+
+    text_offer = hot.offer_text("Томаты", 1.1, "кг", "18:00", "ящик 10 кг")
+    check("в тексте цена", "$1.10/кг" in text_offer, text_offer)
+    check("в тексте время", "до 18:00" in text_offer, text_offer)
+    check("в тексте фасовка", "ящик 10 кг" in text_offer, text_offer)
+    check("просьба о количестве", "количество" in hot.taken_text("Томаты"))
+    note = hot.manager_note("Иван", "Томаты", 1.1)
+    check("менеджеру с ценой", "$1.10" in note and "Взять" in note, note)
+    check("подсказка по формату", "/hot" in hot.sample_text())
 
 
 async def test_db() -> None:
@@ -2559,6 +2607,8 @@ async def main() -> int:
     test_eta_and_envcheck()
     test_suppliers_and_windows()
     test_scripts_quality()
+    test_delivery_survey()
+    test_hot_offer()
     test_golden_live()
     test_module_names()
     await test_db()

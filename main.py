@@ -45,7 +45,9 @@ from orderbot.handlers import (
     record_error,
     router,
 )
+from orderbot.survey import survey_text
 from orderbot.keyboards import (
+    survey_keyboard,
     courier_status_keyboard,
     manager_status_keyboard,
     reminder_keyboard,
@@ -800,6 +802,30 @@ async def _price_morning_loop(
         await asyncio.sleep(30 * 60)
 
 
+async def _survey_loop(bot: Bot, db: Database, settings: Settings) -> None:
+    """C5: через сутки после доставки спрашивает «как прошёл заказ»."""
+    while True:
+        try:
+            for order in await db.delivered_between(20, 48):
+                order_id = int(order["id"])
+                if not await db.claim_once(f"survey:{order_id}"):
+                    continue
+                chef_id = order.get("chef_id")
+                if not chef_id:
+                    continue
+                try:
+                    await bot.send_message(
+                        int(chef_id),
+                        survey_text(order_id),
+                        reply_markup=survey_keyboard(order_id),
+                    )
+                except Exception as exc:
+                    log.info("Опрос по заказу %s не ушёл: %s", order_id, exc)
+        except Exception as exc:
+            log.warning("Ошибка опроса после доставки: %s", exc)
+        await asyncio.sleep(30 * 60)
+
+
 async def _vosk_idle_loop(transcriber) -> None:
     """Раз в 10 минут выгружает офлайн-модель Vosk, если ею не пользовались (A5)."""
     while True:
@@ -1425,6 +1451,9 @@ async def run() -> int:
     )
     vosk_idle_task = asyncio.create_task(
         _vosk_idle_loop(transcriber), name="vosk-idle"
+    )
+    survey_task = asyncio.create_task(
+        _survey_loop(bot, db, settings), name="delivery-survey"
     )
     weekly_task = asyncio.create_task(
         _weekly_loop(bot, db, settings), name="weekly-report"

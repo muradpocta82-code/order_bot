@@ -22,6 +22,7 @@ from .config import Settings
 from .db import Database
 from .formatting import esc, format_orders_page, money
 from .keyboards import (
+    hot_offer_keyboard,
     broadcast_confirm_keyboard,
     claim_actions_keyboard,
     pack_checklist_keyboard,
@@ -39,6 +40,7 @@ from .statement import build_statement, totals as statement_totals
 from . import quiet as quiet_mod
 from .notify import _detach_card, _send_order_card
 from . import payer
+from . import hot
 from . import replies
 from .staffrating import overall_line as staff_rating_line
 from .staffrating import ratings_block as staff_rating_block
@@ -854,6 +856,108 @@ async def cmd_costvoice(
         return
     status = await message.answer("Разбираю цены…")
     await _costs_from_text(message, status, db, settings, catalog, raw)
+
+
+@router.message(Command("hot"))
+async def cmd_hot(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Горячее предложение на скоропорт: /hot помидоры 1.10 до 18:00 (B14)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    offer = hot.parse_offer(command.args or "")
+    if offer is None:
+        await message.answer(hot.sample_text())
+        return
+    matches = catalog.match(offer.phrase, limit=1, min_score=60)
+    if not matches:
+        await message.answer(f"Не нашёл «{esc(offer.phrase)}» в прайсе.")
+        return
+    item = matches[0].item
+    buyers = await db.item_buyers(item.id, 90)
+    if not buyers:
+        await message.answer(
+            f"«{esc(item.name)}» пока никто не покупал — рассылать некому.\n"
+            "Можно отправить всем активным: /broadcast"
+        )
+        return
+    sent = 0
+    skipped = 0
+    for chef_id in buyers:
+        if await db.get_chat_state(chef_id, "remind_off"):
+            skipped += 1
+            continue
+        if await db.get_setting(f"price_optout:{chef_id}", "") == "1":
+            skipped += 1
+            continue
+        try:
+            await message.bot.send_message(
+                chef_id,
+                hot.offer_text(
+                    item.name,
+                    offer.price,
+                    item.unit,
+                    offer.until,
+                    item.pack,
+                ),
+                reply_markup=hot_offer_keyboard(item.id, offer.price),
+            )
+            sent += 1
+        except Exception as exc:
+            log.info("Горячее не ушло клиенту %s: %s", chef_id, exc)
+    lines = [
+        f"🔥 Отправил предложение «{esc(item.name)}» по {money(offer.price)}: {sent} клиентам."
+    ]
+    if skipped:
+        lines.append(f"Пропущено (отказались от рассылок): {skipped}.")
+    lines.append("Нажатия увидите здесь же: «клиент нажал Взять».")
+    await message.answer("\n".join(lines))
+
+
+@router.callback_query(F.data.startswith("hot:"))
+async def cb_hot_take(
+    callback: CallbackQuery,
+    db: Database,
+    settings: Settings,
+    catalog: Catalog,
+) -> None:
+    """Клиент нажал «Взять» — просим количество и сообщаем менеджеру (B14)."""
+    try:
+        _, raw_id, raw_price = callback.data.split(":", 2)
+        catalog_id = int(raw_id)
+        price = float(raw_price)
+    except (ValueError, AttributeError):
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    item = catalog.get(catalog_id)
+    if item is None:
+        await callback.answer("Позиция больше не продаётся", show_alert=True)
+        return
+    await db.set_chat_state(
+        callback.message.chat.id, "hot_take", f"{catalog_id}:{price:g}"
+    )
+    await callback.answer("Записал")
+    try:
+        await callback.message.answer(hot.taken_text(item.name))
+    except Exception:
+        pass
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                hot.manager_note(
+                    callback.from_user.full_name or str(callback.from_user.id),
+                    item.name,
+                    price,
+                ),
+            )
+        except Exception:
+            pass
 
 
 @router.message(Command("assign"))

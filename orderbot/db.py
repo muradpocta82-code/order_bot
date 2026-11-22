@@ -1532,6 +1532,45 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def item_buyers(self, catalog_id: int, days: int = 90) -> list[int]:
+        """Клиенты, которые покупали позицию (B14: кому слать горячее)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT o.chef_id FROM order_items oi "
+            "JOIN orders o ON o.id = oi.order_id "
+            "WHERE oi.catalog_id = %s AND o.chef_id IS NOT NULL "
+            "AND o.status != 'cancelled' "
+            "AND o.created_at >= now() - (%s || ' days')::interval",
+            (int(catalog_id), int(days)),
+        )
+        return [int(row["chef_id"]) for row in await cursor.fetchall()]
+
+    async def append_claim_text(self, claim_id: int, extra: str) -> None:
+        """Дописать описание к уже созданной претензии (C5)."""
+        assert self.conn is not None
+        note = str(extra or "").strip()
+        if not note:
+            return
+        await self.conn.execute(
+            "UPDATE claims SET text = COALESCE(text, '') || %s WHERE id = %s",
+            ("\n" + note[:1000], int(claim_id)),
+        )
+        await self.conn.commit()
+
+    async def delivered_between(
+        self, hours_from: int, hours_to: int
+    ) -> list[dict[str, Any]]:
+        """Доставленные заказы в окне «столько-то часов назад» (C5)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT id, chef_id, chef_name, manager_chat_id, total FROM orders "
+            "WHERE status = 'done' AND delivered_at IS NOT NULL "
+            "AND delivered_at <= now() - (%s || ' hours')::interval "
+            "AND delivered_at >= now() - (%s || ' hours')::interval",
+            (int(hours_from), int(hours_to)),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def close_claim(self, claim_id: int, status: str = "closed") -> None:
         """Закрывает претензию с итогом: replaced / credit / rejected / closed."""
         assert self.conn is not None
