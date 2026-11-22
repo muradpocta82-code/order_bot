@@ -1074,6 +1074,53 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def add_shadow_parse(
+        self,
+        order_id: int | None,
+        chef_id: int | None,
+        provider: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Записывает сравнение рабочего и теневого разбора (E10)."""
+        assert self.conn is not None
+        import json as _json
+
+        await self.conn.execute(
+            "INSERT INTO shadow_parses(order_id, chef_id, provider, items_main, "
+            "items_shadow, matched, match_pct, details) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            (
+                int(order_id) if order_id else None,
+                int(chef_id) if chef_id else None,
+                str(provider or "")[:40],
+                int(result.get("items_main") or 0),
+                int(result.get("items_shadow") or 0),
+                int(result.get("matched") or 0),
+                round(float(result.get("match_pct") or 0), 2),
+                _json.dumps(result.get("diffs") or [], ensure_ascii=False),
+            ),
+        )
+        await self.conn.commit()
+
+    async def shadow_stats(self, days: int = 30) -> dict[str, Any]:
+        """Сколько сравнений и среднее совпадение теневого промпта (E10)."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(AVG(match_pct), 0) AS avg, "
+            "COALESCE(SUM(CASE WHEN match_pct >= 99 THEN 1 ELSE 0 END), 0) AS exact "
+            "FROM shadow_parses WHERE created_at >= %s",
+            (since,),
+        )
+        row = await cursor.fetchone() or {}
+        return {
+            "n": int(row.get("n") or 0),
+            "avg": round(float(row.get("avg") or 0), 1),
+            "exact": int(row.get("exact") or 0),
+        }
+
     async def feedback_by_source(self, days: int = 30) -> list[dict[str, Any]]:
         """Доля «поправить» по источнику заказа: текст, голос, фото (E9)."""
         assert self.conn is not None

@@ -40,6 +40,8 @@ def make_dump() -> Path:
             "pg_dump",
             "--no-owner",
             "--no-privileges",
+            # расширение статистики — настройка кластера, в дамп данных не входит
+            "--exclude-extension=pg_stat_statements",
             "-Fc",
             "-Z",
             "6",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import json
 import logging
 import time
@@ -906,6 +907,54 @@ async def _process_order(message: Message, *args, **kwargs) -> None:
         await _process_order_serial(message, *args, **kwargs)
 
 
+def _schedule_shadow_parse(
+    db: Database,
+    ai: AIClient,
+    settings: Settings,
+    text: str,
+    chef_id: int,
+    main_items: list,
+    order_id: int | None,
+) -> None:
+    """Теневой разбор части заказов: только сравнение и запись (E10)."""
+    from .shadow import compare_items, should_sample
+
+    share = float(getattr(settings, "shadow_prompt_pct", 0) or 0)
+    if share <= 0 or not text:
+        return
+    if not should_sample(share, random.random()):
+        return
+
+    async def _run() -> None:
+        from datetime import datetime as _dt
+
+        try:
+            parsed = await ai.shadow_parse(text, _dt.now(settings.timezone))
+            if parsed is None:
+                return
+            shadow_items = [
+                {"catalog_id": item.catalog_id, "qty": item.qty}
+                for item in parsed.items
+            ]
+            result = compare_items(main_items, shadow_items)
+            await db.add_shadow_parse(
+                order_id, chef_id, str(getattr(parsed, "provider", "")), result
+            )
+            log.info(
+                "Теневой разбор: совпадение %.0f%% (%s из %s)",
+                float(result["match_pct"]),
+                result["matched"],
+                result["items_main"],
+            )
+        except Exception:
+            log.info("Теневой разбор не записался", exc_info=True)
+
+    try:
+        asyncio.create_task(_run())
+    except Exception:
+        log.debug("Не удалось запустить теневой разбор", exc_info=True)
+
+
 async def _process_order_serial(
     message: Message,
     text: str,
@@ -959,6 +1008,15 @@ async def _process_order_serial(
             )
             return
         await db.create_draft(draft)
+        _schedule_shadow_parse(
+            db=db,
+            ai=ai,
+            settings=settings,
+            text=text,
+            chef_id=message.from_user.id,
+            main_items=draft.get("items") or [],
+            order_id=None,
+        )
         await _warn_quantity(message, db, draft)
         await db.log_parse(
             chef_id=message.from_user.id,

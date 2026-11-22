@@ -31,6 +31,9 @@ echo "Дамп:            $DUMP"
 echo "Репетиционная:   order_bot_rehearsal"
 
 su postgres -c "dropdb --if-exists order_bot_rehearsal && createdb -O order_bot order_bot_rehearsal"
+# Расширение статистики создаёт суперпользователь: в дампе есть CREATE EXTENSION,
+# а роль order_bot такого права не имеет.
+su postgres -c "psql -q -d order_bot_rehearsal -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'"
 pg_restore --no-owner --no-privileges -d "$REHEARSAL" "$DUMP"
 DATABASE_URL="$REHEARSAL" venv/bin/python scripts/migrate.py
 echo "Репетиция пройдена. Если всё верно — можно применять на боевой."

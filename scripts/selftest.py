@@ -2253,6 +2253,71 @@ def test_documents_with_payment() -> None:
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_shadow_prompts() -> None:
+    print("\n[теневой режим промптов (E10)]")
+    from orderbot.shadow import compare_items, should_sample
+
+    check("выключено — не берём", not should_sample(0, 0.0))
+    check("доля 10%, попали", should_sample(10, 0.05))
+    check("доля 10%, не попали", not should_sample(10, 0.5))
+    check("доля 100% — берём", should_sample(100, 0.999))
+    check("больше 100 — не берём", not should_sample(150, 0.1))
+    check("мусор в доле", not should_sample("abc", 0.1))
+    check("мусор в жребии", not should_sample(10, None))
+
+    main = [
+        {"catalog_id": 4, "final_qty": 2, "qty": 2},
+        {"catalog_id": 5, "final_qty": 10, "qty": 10},
+    ]
+    same = compare_items(main, [{"catalog_id": 4, "qty": 2}, {"catalog_id": 5, "qty": 10}])
+    check("полное совпадение", same["match_pct"] == 100.0 and same["matched"] == 2, str(same))
+    check("расхождений нет", same["diffs"] == [], str(same["diffs"]))
+    partial = compare_items(main, [{"catalog_id": 4, "qty": 2}])
+    check("одна позиция потеряна", partial["match_pct"] == 50.0, str(partial))
+    check("потеря видна в расхождениях", len(partial["diffs"]) == 1, str(partial["diffs"]))
+    wrong_qty = compare_items(main, [{"catalog_id": 4, "qty": 3}, {"catalog_id": 5, "qty": 10}])
+    check("другое количество", wrong_qty["match_pct"] == 50.0, str(wrong_qty))
+    extra = compare_items(main, [{"catalog_id": 4, "qty": 2}, {"catalog_id": 5, "qty": 10},
+                                 {"catalog_id": 6, "qty": 1}])
+    check("лишняя позиция не мешает совпадению", extra["match_pct"] == 100.0, str(extra))
+    check("лишняя позиция в расхождениях", len(extra["diffs"]) == 1, str(extra["diffs"]))
+    empty = compare_items([], [{"catalog_id": 4, "qty": 1}])
+    check("пустой рабочий разбор", empty["match_pct"] == 0.0 and empty["items_main"] == 0, str(empty))
+
+
+async def test_shadow_db() -> None:
+    print("\n[теневые разборы в базе (E10)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+    from orderbot.shadow import compare_items
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            empty = await db.shadow_stats(30)
+            check("пустая статистика", empty["n"] == 0, str(empty))
+            result = compare_items(
+                [{"catalog_id": 4, "final_qty": 2}, {"catalog_id": 5, "final_qty": 3}],
+                [{"catalog_id": 4, "qty": 2}],
+            )
+            await db.add_shadow_parse(None, 9601, "gemini-shadow", result)
+            stats = await db.shadow_stats(30)
+            check("сравнение записано", stats["n"] == 1 and stats["avg"] == 50.0, str(stats))
+            check("полных совпадений нет", stats["exact"] == 0, str(stats))
+            exact = compare_items([{"catalog_id": 4, "final_qty": 1}], [{"catalog_id": 4, "qty": 1}])
+            await db.add_shadow_parse(None, 9601, "gemini-shadow", exact)
+            stats = await db.shadow_stats(30)
+            check("два сравнения", stats["n"] == 2, str(stats))
+            check("одно полное", stats["exact"] == 1, str(stats))
+            check("среднее считается", 70.0 <= stats["avg"] <= 80.0, str(stats))
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3197,6 +3262,8 @@ async def main() -> int:
     test_geo_and_eta()
     await test_geo_db()
     test_documents_with_payment()
+    test_shadow_prompts()
+    await test_shadow_db()
     await test_migrations_on_copy()
     await test_locked_db()
     await test_lock_cleanup()

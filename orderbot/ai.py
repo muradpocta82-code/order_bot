@@ -53,6 +53,24 @@ SYSTEM_PROMPT = """Ты — ассистент оптового поставщи
 - Верни только JSON."""
 
 
+SHADOW_PROMPT = """Ты — старший кладовщик оптового поставщика продуктов для HoReCa.
+Сегодня {today} ({weekday}), часовой пояс Asia/Tashkent.
+
+Задача: разобрать заказ повара максимально строго и вернуть один JSON без пояснений.
+
+Каталог (id | название | единица | фасовка | цена, USD):
+{catalog}
+
+Формат: {{"items":[{{"raw":"...","catalog_id":1,"qty":1,"unit":"коробка","candidates":[]}}], "delivery_date":null, "delivery_time":null, "comment":""}}
+
+Требования:
+- catalog_id обязателен, если позиция есть в каталоге; иначе null и до 3 id в candidates.
+- qty — число или null; единицу бери из фразы повара, не подменяй на единицу каталога.
+- Не объединяй разные позиции и не придумывай позиции, которых не было.
+- delivery_date — ISO-дата от {today}; если не названа — null.
+- Верни только JSON."""
+
+
 def _is_auth_error(exc: Exception) -> bool:
     for attr in ("status_code", "code", "http_status"):
         value = getattr(exc, attr, None)
@@ -250,7 +268,8 @@ class AIClient:
             f"{item.id} | {item.name} | {item.unit} | {item.pack} | {item.price:.0f}"
             for item in self.catalog.items
         ]
-        return SYSTEM_PROMPT.format(
+        template = SHADOW_PROMPT if getattr(self, "_shadow_mode", False) else SYSTEM_PROMPT
+        return template.format(
             today=today.isoformat(),
             weekday=WEEKDAYS_RU[today.weekday()],
             catalog="\n".join(catalog_lines),
@@ -332,6 +351,29 @@ class AIClient:
                 self._cache[key] = (time.time(), order)
                 log.info("Разбор Gemini: %d позиций", len(order.items))
                 return order
+        return None
+
+    async def shadow_parse(self, text: str, now: datetime):
+        """Разбор тем же провайдером, но новым промптом (E10).
+
+        Ничего не меняет у клиента: результат только сравнивается и логируется.
+        """
+        if not (self.deepseek_enabled or self.gemini_enabled):
+            return None
+        today = now.date()
+        previous = getattr(self, "_shadow_mode", False)
+        self._shadow_mode = True
+        try:
+            if self.deepseek_enabled and self._deepseek is not None:
+                payload = await self._deepseek_json(text, today)
+                return self._order_from_payload(payload, text, "deepseek-shadow", now)
+            if self.gemini_enabled and self._gemini is not None:
+                payload = await self._gemini_json(text, today)
+                return self._order_from_payload(payload, text, "gemini-shadow", now)
+        except Exception:
+            log.info("Теневой разбор не удался", exc_info=True)
+        finally:
+            self._shadow_mode = previous
         return None
 
     def _local_ready(self, text: str, now: datetime) -> bool:

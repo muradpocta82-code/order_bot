@@ -88,6 +88,7 @@ class Settings:
     min_order_usd: float = 0.0
     heartbeat_url: str = ""
     local_first: bool = True
+    shadow_prompt_pct: float = 0.0
     llm_daily_budget: int = 0
     llm_user_hourly: int = 0
     llm_cost_per_call: float = 0.002
@@ -140,6 +141,7 @@ def load_settings() -> Settings:
         min_order_usd=_float("MIN_ORDER_USD", 0.0),
         heartbeat_url=_str("HEARTBEAT_URL"),
         local_first=_str("LOCAL_FIRST", "1") not in ("0", "false", "no", "off"),
+        shadow_prompt_pct=max(0.0, min(100.0, _float("SHADOW_PROMPT_PCT", 0.0))),
         llm_daily_budget=_int("LLM_DAILY_BUDGET", 0) or 0,
         llm_user_hourly=_int("LLM_USER_HOURLY", 0) or 0,
         llm_cost_per_call=_float("LLM_COST_PER_CALL", 0.002),

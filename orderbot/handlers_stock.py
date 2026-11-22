@@ -68,6 +68,14 @@ async def cmd_quality(message: Message, db: Database, settings: Settings) -> Non
                 f"{row['n']} зак., вопросов {avg_q:.1f}, "
                 f"{avg_ms / 1000:.1f} с\n"
             )
+    shadow = await db.shadow_stats(30)
+    if shadow["n"]:
+        text += (
+            f"\n🧪 <b>Теневые промпты</b>\n"
+            f"Сравнений: {shadow['n']}, среднее совпадение {shadow['avg']:.0f}%, "
+            f"полных совпадений {shadow['exact']}\n"
+        )
+
     by_source = await db.feedback_by_source(30)
     if by_source:
         names = {"text": "текст", "voice": "голос", "photo": "фото", "webapp": "мини-апп"}
