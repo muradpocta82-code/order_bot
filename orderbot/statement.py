@@ -27,8 +27,10 @@ def totals(
             continue
         total = float(order.get("total") or 0)
         billed += total
-        if str(order.get("payment_status")) == "paid":
-            paid += float(order.get("paid_amount") or total)
+        part = float(order.get("paid_amount") or 0)
+        if str(order.get("payment_status")) == "paid" and part <= 0:
+            part = total
+        paid += min(total, part)
     notes = 0.0
     for note in credit_notes or []:
         try:
@@ -141,9 +143,12 @@ def build_statement(
         pdf.cell(0, 6, "Претензии с зачётом (кредит-ноты)", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("DejaVu", "", 9)
         for note in credit_notes:
+            order_ref = note.get("order_id")
             line = (
-                f"№{note.get('order_id')} · {_short_date(note.get('created_at'))} · "
-                f"${float(note.get('amount') or 0):.2f} · {note.get('text') or ''}"
+                f"№{order_ref if order_ref else 'без заказа'} · "
+                f"{_short_date(note.get('created_at'))} · "
+                f"${float(note.get('amount') or 0):.2f} · "
+                f"{note.get('reason') or note.get('text') or ''}"
             )
             pdf.multi_cell(0, 5, line[:180], new_x="LMARGIN", new_y="NEXT")
 

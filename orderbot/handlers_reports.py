@@ -256,9 +256,9 @@ async def cmd_settle(
             await message.answer("Сумма должна быть числом, например <code>300</code>.")
             return
     if amount is None:
-        amount = await db.credit_orders_sum(client_id)
-        if amount <= 0:
-            await message.answer("У этого клиента нет заказов «в долг».")
+        amount = round(max(0.0, before["open"]), 2)
+        if amount <= 0.005:
+            await message.answer("У этого клиента нет долга по книге расчётов.")
             return
     if amount <= 0:
         await message.answer("Сумма должна быть больше нуля.")
@@ -288,36 +288,64 @@ async def cmd_creditnote(
     """Кредит-нота: зачёт по претензии уменьшает долг (B3)."""
     if not _is_manager(settings, message.from_user.id, message.chat.id):
         return
-    parts = (command.args or "").strip().split(maxsplit=2)
-    if len(parts) < 2 or not parts[0].lstrip("-").isdigit():
+    tokens: list[str] = []
+    order_id: int | None = None
+    for token in (command.args or "").strip().split():
+        if token.startswith("#") and token[1:].isdigit():
+            order_id = int(token[1:])
+        else:
+            tokens.append(token)
+    if len(tokens) < 2 or not tokens[0].lstrip("-").isdigit():
         await message.answer(
             "Формат: <code>/creditnote ID СУММА причина</code>\n"
             "Пример: /creditnote 123456789 25 недовес помидоров\n"
-            "Зачёт уменьшит долг клиента по книге расчётов."
+            "С привязкой к заказу: <code>/creditnote 123456789 25 недовес #123</code>\n"
+            "Зачёт уменьшит долг клиента по книге; остаток уйдёт в следующий счёт."
         )
         return
-    client_id = int(parts[0])
+    client_id = int(tokens[0])
     try:
-        amount = round(float(parts[1].replace(",", ".")), 2)
+        amount = round(float(tokens[1].replace(",", ".")), 2)
     except ValueError:
         await message.answer("Сумма должна быть числом, например <code>25</code>.")
         return
     if amount <= 0:
         await message.answer("Сумма должна быть больше нуля.")
         return
-    reason = parts[2] if len(parts) > 2 else ""
+    reason = " ".join(tokens[2:])
     user = await db.get_user(client_id)
     if user is None:
         await message.answer(f"Клиент с id {client_id} не найден.")
         return
+    if order_id is not None:
+        order = await db.get_order(order_id)
+        if order is None or int(order.get("chef_id") or 0) != client_id:
+            await message.answer(
+                f"Заказ №{order_id} не найден у клиента {client_id}."
+            )
+            return
     before = await db.client_book_debt(client_id)
-    await db.add_credit_note(client_id, amount, reason or "претензия")
+    result = await db.add_credit_note(
+        client_id, amount, reason or "претензия", order_id=order_id
+    )
     after = await db.client_book_debt(client_id)
-    await message.answer(
+    lines = [
         f"📄 Кредит-нота на {money(amount)} записана"
         + (f": {esc(reason)}" if reason else "")
-        + f".\nДолг по книге: {money(before['open'])} → <b>{money(after['open'])}</b>"
+    ]
+    if result["applied"]:
+        lines.append(
+            "Зачтено: "
+            + ", ".join(
+                f"№{target} — {money(part)}" for target, part in result["applied"]
+            )
+        )
+    if result["left"] > 0:
+        lines.append(f"💤 Остаток авансом: {money(result['left'])}")
+    lines.append(
+        f"Долг по книге: {money(before['open'])} → <b>{money(after['open'])}</b>"
     )
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("broadcast"))

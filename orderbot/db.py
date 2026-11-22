@@ -718,6 +718,14 @@ class Database:
                             "Не удалось сохранить курс в заказе %s", order_id,
                             exc_info=True,
                         )
+            # B3-остаток: незачтённый остаток кредит-нот закрывает новый счёт.
+            applied_credit = await self.apply_client_credit(
+                int(draft["user_id"]), order_id
+            )
+            if applied_credit > 0:
+                log.info(
+                    "Кредит-нота закрыла %s в заказе %s", applied_credit, order_id
+                )
             return order_id
 
     async def replace_order_items(
@@ -1591,12 +1599,19 @@ class Database:
     # книга расчётов (B3)
     # ------------------------------------------------------------------
     async def client_open_orders(self, client_id: int) -> list[dict[str, Any]]:
-        """Заказы клиента с остатком долга, старые сверху — для зачёта FIFO."""
+        """Заказы клиента с остатком долга, старые сверху — для зачёта FIFO.
+
+        `credited` — сколько по заказу уже зачтено кредит-нотами.
+        """
         assert self.conn is not None
         cursor = await self.conn.execute(
-            "SELECT id, total, paid_amount, status, created_at FROM orders "
-            "WHERE chef_id = %s AND status != 'cancelled' "
-            "ORDER BY created_at, id",
+            "SELECT o.id, o.total, o.paid_amount, o.status, o.created_at, "
+            "COALESCE(ca.s, 0) AS credited "
+            "FROM orders o LEFT JOIN ("
+            "  SELECT order_id, SUM(amount) AS s FROM credit_applications GROUP BY order_id"
+            ") ca ON ca.order_id = o.id "
+            "WHERE o.chef_id = %s AND o.status != 'cancelled' "
+            "ORDER BY o.created_at, o.id",
             (int(client_id),),
         )
         return [dict(row) for row in await cursor.fetchall()]
@@ -1706,15 +1721,19 @@ class Database:
         return [dict(row) for row in await cursor.fetchall()]
 
     async def ledger_client_debts(self) -> list[dict[str, Any]]:
-        """Долги по книге: доставлено, но не оплачено (B3, шаг 2)."""
+        """Долги по книге: доставлено, но не оплачено и не зачтено (B3)."""
         assert self.conn is not None
         cursor = await self.conn.execute(
             "SELECT o.chef_id, MAX(o.chef_name) AS chef_name, COUNT(*) AS n, "
-            "COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0)), 0) AS open, "
+            "COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0) - COALESCE(ca.s, 0)), 0) AS open, "
             "MIN(o.created_at) AS since "
-            "FROM orders o WHERE o.chef_id IS NOT NULL AND o.status = 'done' "
-            "AND o.payment_status != 'paid' "
-            "GROUP BY o.chef_id HAVING COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0)), 0) > 0.01 "
+            "FROM orders o LEFT JOIN ("
+            "  SELECT order_id, SUM(amount) AS s FROM credit_applications GROUP BY order_id"
+            ") ca ON ca.order_id = o.id "
+            "WHERE o.chef_id IS NOT NULL AND o.status = 'done' "
+            "AND o.total - COALESCE(o.paid_amount, 0) - COALESCE(ca.s, 0) > 0.01 "
+            "GROUP BY o.chef_id "
+            "HAVING COALESCE(SUM(o.total - COALESCE(o.paid_amount, 0) - COALESCE(ca.s, 0)), 0) > 0.01 "
             "ORDER BY open DESC"
         )
         return [dict(row) for row in await cursor.fetchall()]
@@ -1725,24 +1744,116 @@ class Database:
         amount: float,
         reason: str = "",
         order_id: int | None = None,
-    ) -> int:
-        """Кредит-нота: зачёт по претензии уменьшает долг клиента (B3)."""
+    ) -> dict[str, Any]:
+        """Кредит-нота: зачёт по претензии уменьшает долг клиента (B3).
+
+        Нота сразу раскладывается по заказам: сначала указанный, потом старые
+        (FIFO). Неприменённый остаток остаётся авансом и уходит в следующий
+        счёт при создании заказа.
+        """
+        from .ledger import credit_plan
+
         assert self.conn is not None
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        amount = round(float(amount), 2)
+        async with self._tx():
+            cursor = await self.conn.execute(
+                "INSERT INTO credit_notes(client_id, order_id, amount, reason, ts) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (
+                    int(client_id),
+                    int(order_id) if order_id else None,
+                    amount,
+                    reason[:300],
+                    now,
+                ),
+            )
+            note_id = int((await cursor.fetchone())["id"])
+            orders = await self.client_open_orders(client_id)
+            plan, left = credit_plan(amount, orders, order_id)
+            for target_id, part in plan:
+                await self.conn.execute(
+                    "INSERT INTO credit_applications(credit_note_id, order_id, amount, created_at) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (credit_note_id, order_id) DO NOTHING",
+                    (note_id, int(target_id), round(part, 2), now),
+                )
+            if order_id is None and len(plan) == 1:
+                await self.conn.execute(
+                    "UPDATE credit_notes SET order_id = %s WHERE id = %s",
+                    (int(plan[0][0]), note_id),
+                )
+        return {"note_id": note_id, "amount": amount, "applied": plan, "left": left}
+
+    async def client_open_credit(self, client_id: int) -> float:
+        """Незачтённый остаток кредит-нот клиента (аванс)."""
+        assert self.conn is not None
         cursor = await self.conn.execute(
-            "INSERT INTO credit_notes(client_id, order_id, amount, reason, ts) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (
-                int(client_id),
-                int(order_id) if order_id else None,
-                round(float(amount), 2),
-                reason[:300],
-                now,
-            ),
+            "SELECT (SELECT COALESCE(SUM(amount), 0) FROM credit_notes "
+            "  WHERE client_id = %s) - (SELECT COALESCE(SUM(ca.amount), 0) "
+            "  FROM credit_applications ca JOIN credit_notes cn ON cn.id = ca.credit_note_id "
+            "  WHERE cn.client_id = %s) AS s",
+            (int(client_id), int(client_id)),
         )
-        note_id = int((await cursor.fetchone())["id"])
-        await self.conn.commit()
-        return note_id
+        row = await cursor.fetchone()
+        return max(0.0, round(float(row["s"] or 0), 2)) if row else 0.0
+
+    async def credit_applied(self, order_id: int) -> float:
+        """Сколько зачтено кредит-нотами по конкретному заказу."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS s FROM credit_applications "
+            "WHERE order_id = %s",
+            (int(order_id),),
+        )
+        row = await cursor.fetchone()
+        return round(float(row["s"] or 0), 2) if row else 0.0
+
+    async def apply_client_credit(self, client_id: int, order_id: int) -> float:
+        """Закрывает новый счёт незачтённым остатком кредит-нот (B3).
+
+        Деньги клиента не трогаем: `paid_amount` — только живые оплаты.
+        Зачёт виден в `credit_applications`, долг считается из книги.
+        """
+        assert self.conn is not None
+        available = await self.client_open_credit(client_id)
+        if available <= 0.005:
+            return 0.0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(SUM(total), 0) - COALESCE(SUM(paid_amount), 0) "
+            "- (SELECT COALESCE(SUM(amount), 0) FROM credit_applications "
+            "   WHERE order_id = %s) AS open FROM orders WHERE id = %s",
+            (int(order_id), int(order_id)),
+        )
+        row = await cursor.fetchone()
+        open_sum = round(float(row["open"] or 0), 2) if row else 0.0
+        left = min(available, max(0.0, open_sum))
+        if left <= 0.005:
+            return 0.0
+        cursor = await self.conn.execute(
+            "SELECT cn.id, cn.amount - COALESCE((SELECT SUM(amount) "
+            "  FROM credit_applications WHERE credit_note_id = cn.id), 0) AS rest "
+            "FROM credit_notes cn WHERE cn.client_id = %s ORDER BY cn.ts, cn.id",
+            (int(client_id),),
+        )
+        notes = [dict(row) for row in await cursor.fetchall()]
+        applied = 0.0
+        for note in notes:
+            if left <= 0.005:
+                break
+            rest = round(float(note["rest"] or 0), 2)
+            if rest <= 0.005:
+                continue
+            part = round(min(rest, left), 2)
+            await self.conn.execute(
+                "INSERT INTO credit_applications(credit_note_id, order_id, amount, created_at) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (credit_note_id, order_id) "
+                "DO UPDATE SET amount = credit_applications.amount + EXCLUDED.amount",
+                (int(note["id"]), int(order_id), part, now),
+            )
+            applied = round(applied + part, 2)
+            left = round(left - part, 2)
+        return applied
 
     async def client_book_debt(self, client_id: int) -> dict[str, float]:
         """Долг клиента по книге: выставлено − оплачено − зачтено (B3)."""
@@ -1808,21 +1919,15 @@ class Database:
     async def client_credit_notes(
         self, chef_id: int, start: str, end: str
     ) -> list[dict[str, Any]]:
-        """Претензии клиента с решением «кредит-нота» за период (B4)."""
+        """Кредит-ноты клиента за период — для акта сверки (B3, B4)."""
         assert self.conn is not None
         cursor = await self.conn.execute(
-            "SELECT cl.id, cl.order_id, cl.text, cl.status, cl.created_at "
-            "FROM claims cl JOIN orders o ON o.id = cl.order_id "
-            "WHERE o.chef_id = %s AND cl.status = %s "
-            "AND cl.created_at >= %s AND cl.created_at <= %s ORDER BY cl.id",
-            (int(chef_id), "credit", start, end),
+            "SELECT id, order_id, amount, reason, ts AS created_at "
+            "FROM credit_notes WHERE client_id = %s AND ts >= %s AND ts <= %s "
+            "ORDER BY ts, id",
+            (int(chef_id), start, end),
         )
-        notes = []
-        for row in await cursor.fetchall():
-            data = dict(row)
-            data.setdefault("amount", 0)
-            notes.append(data)
-        return notes
+        return [dict(row) for row in await cursor.fetchall()]
 
     async def claims_for_order(self, order_id: int) -> list[dict[str, Any]]:
         assert self.conn is not None

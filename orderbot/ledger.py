@@ -4,7 +4,8 @@
 иногда с зачётом претензии. Раньше оплата жила полями заказа
 (`paid_amount`, `payment_status`) — один платёж на заказ. Здесь появляется
 книга: `payments` (деньги пришли), `allocations` (что этим закрыли),
-`credit_notes` (зачёт по претензии).
+`credit_notes` (зачёт по претензии) и `credit_applications` (в какой счёт
+зачёт ушёл).
 
 Шаг 1 (этот): книга наполняется и сверяется со старыми полями, но чтение
 отчётов пока идёт по-старому. Логика зачёта — чистые функции, без базы.
@@ -22,7 +23,8 @@ def open_amount(order: dict[str, Any]) -> float:
         return 0.0
     total = float(order.get("total") or 0)
     paid = float(order.get("paid_amount") or 0)
-    return max(0.0, round(total - paid, 2))
+    credited = float(order.get("credited") or 0)
+    return max(0.0, round(total - paid - credited, 2))
 
 
 def fifo_allocate(
@@ -40,6 +42,39 @@ def fifo_allocate(
     if left <= 0:
         return result, 0.0
     for order in orders:
+        if left <= EPS:
+            break
+        if str(order.get("status")) == "cancelled":
+            continue
+        debt = open_amount(order)
+        if debt <= EPS:
+            continue
+        part = round(min(debt, left), 2)
+        result.append((int(order["id"]), part))
+        left = round(left - part, 2)
+    return result, max(0.0, left)
+
+
+def credit_plan(
+    amount: float,
+    orders: list[dict[str, Any]],
+    order_id: int | None = None,
+) -> tuple[list[tuple[int, float]], float]:
+    """Раскладка кредит-ноты: указанный заказ первым, дальше FIFO.
+
+    Возвращает ([(order_id, сумма)], неприменённый остаток).
+    Остаток > 0 — аванс, который уйдёт в следующий счёт.
+    """
+    left = round(float(amount or 0), 2)
+    result: list[tuple[int, float]] = []
+    if left <= 0:
+        return result, 0.0
+    ordered = list(orders)
+    if order_id is not None:
+        first = [o for o in ordered if int(o["id"]) == int(order_id)]
+        rest = [o for o in ordered if int(o["id"]) != int(order_id)]
+        ordered = first + rest
+    for order in ordered:
         if left <= EPS:
             break
         if str(order.get("status")) == "cancelled":

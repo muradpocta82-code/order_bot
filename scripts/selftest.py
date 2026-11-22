@@ -391,6 +391,45 @@ async def test_ledger_db() -> None:
             )
             credit_sum = await db.credit_orders_sum(client)
             check("сумма «в долг» для /settle", credit_sum >= 0.0, str(credit_sum))
+
+            # B3-остаток: остаток ноты уходит в следующий счёт, нота привязывается к заказу
+            rest_before = await db.client_open_credit(client)
+            check("незачтённый остаток кредит-нот", rest_before == 15.0, str(rest_before))
+            extra_id = await db.create_order(
+                {
+                    "id": "ledger-extra",
+                    "chat_id": client,
+                    "user_id": client,
+                    "delivery_date": "2026-11-23",
+                    "delivery_time": "09:00–12:00",
+                    "source": "test",
+                },
+                [
+                    {
+                        "catalog_id": 4,
+                        "name": "Куриное филе",
+                        "qty": 6,
+                        "unit": "кг",
+                        "price": 10.0,
+                        "total": 60.0,
+                    }
+                ],
+                None,
+            )
+            applied_extra = await db.credit_applied(extra_id)
+            check("остаток ноты зачёлся в новый счёт", applied_extra == 15.0, str(applied_extra))
+            rest_after = await db.client_open_credit(client)
+            check("остаток ноты исчерпан", rest_after == 0.0, str(rest_after))
+            book_extra = await db.client_book_debt(client)
+            check("долг по книге с новым счётом", book_extra["open"] == 25.0, str(book_extra))
+            tied = await db.add_credit_note(client, 10.0, "скол", order_id=extra_id)
+            check(
+                "нота привязана к заказу",
+                tied["applied"] == [(extra_id, 10.0)],
+                str(tied),
+            )
+            book_tied = await db.client_book_debt(client)
+            check("долг после ноты к заказу", book_tied["open"] == 15.0, str(book_tied))
         finally:
             await db.close()
 
