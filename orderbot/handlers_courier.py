@@ -333,7 +333,11 @@ async def cb_courier_done(
         for chat in (order.get("chef_id"), manager):
             if chat:
                 recipients.append(int(chat))
-        if order.get("chef_id"):
+        # C11: у точки может быть свой плательщик — тогда накладная идёт ему.
+        spot_payer = await db.location_payer(order.get("location_id"))
+        if spot_payer:
+            recipients.append(int(spot_payer))
+        elif order.get("chef_id"):
             try:
                 recipients.extend(await db.payers_for(int(order["chef_id"])))
             except Exception as exc:

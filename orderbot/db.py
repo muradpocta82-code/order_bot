@@ -1661,6 +1661,19 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount == 1
 
+    async def location_payer(self, location_id: int | None) -> int | None:
+        """Плательщик конкретной точки: накладная идёт ему, а не клиенту (C11)."""
+        if not location_id:
+            return None
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT payer_id FROM locations WHERE id = %s", (int(location_id),)
+        )
+        row = await cursor.fetchone()
+        if not row or not row["payer_id"]:
+            return None
+        return int(row["payer_id"])
+
     async def set_location_payer(self, location_id: int, payer_id: int | None) -> None:
         assert self.conn is not None
         await self.conn.execute(

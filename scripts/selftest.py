@@ -1976,6 +1976,15 @@ async def test_locations_db() -> None:
                 bool(bar) and float(bar[0]["revenue"]) == 18.0 and int(bar[0]["orders"]) == 1,
                 str(stats),
             )
+            await db.set_location_payer(second, 555001)
+            check(
+                "плательщик точки сохранён",
+                await db.location_payer(second) == 555001,
+                str(await db.location_payer(second)),
+            )
+            await db.set_location_payer(second, None)
+            check("плательщик точки снят", await db.location_payer(second) is None)
+            check("без точки плательщика нет", await db.location_payer(None) is None)
             check("удаление точки", await db.delete_location(client, second))
             check("чужую точку не удалить", not await db.delete_location(999999, first))
             left = await db.client_locations(client)

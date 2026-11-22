@@ -1857,6 +1857,45 @@ async def cmd_client_price_del(
     )
 
 
+@router.message(Command("venue_payer"))
+async def cmd_venue_payer(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Плательщик точки: /venue_payer ID_клиента Точка PAYER_ID (C11)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    parts = (command.args or "").strip().split(maxsplit=2)
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit() or not parts[2].isdigit():
+        await message.answer(
+            "Формат: <code>/venue_payer ID_клиента Точка PAYER_ID</code>\n"
+            "Пример: /venue_payer 123456789 Склад Навои 987654321\n"
+            "Снять: <code>/venue_payer ID_клиента Точка 0</code>"
+        )
+        return
+    client_id = int(parts[0])
+    payer_id = int(parts[2])
+    from orderbot.locations import pick_by_name
+
+    rows = await db.client_locations(client_id)
+    spot = pick_by_name(rows, parts[1])
+    if spot is None:
+        await message.answer("Такой точки у клиента нет. Список: /venues " + str(client_id))
+        return
+    if payer_id and await db.get_user(payer_id) is None:
+        await message.answer(f"Плательщик с id {payer_id} не найден.")
+        return
+    await db.set_location_payer(int(spot["id"]), payer_id or None)
+    if payer_id:
+        await message.answer(
+            f"Плательщик точки «{esc(str(spot.get('name')))}» — id <code>{payer_id}</code>. "
+            "Накладные этой точки пойдут ему."
+        )
+    else:
+        await message.answer(
+            f"У точки «{esc(str(spot.get('name')))}» снова общий плательщик клиента."
+        )
+
+
 @router.message(Command("claims"))
 async def cmd_claims(message: Message, db: Database, settings: Settings) -> None:
     """Открытые претензии: что ещё не решено."""
