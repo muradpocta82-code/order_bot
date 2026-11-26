@@ -14,7 +14,12 @@ Telegram-бот приёма заказов для оптового постав
 | Что | Где |
 |---|---|
 | Запуск, 13 фоновых циклов, меню команд | `main.py` |
-| Ядро обработчиков (2774 строки) | `orderbot/handlers.py` |
+| Ядро обработчиков (2752 строки) | `orderbot/handlers.py` |
+| Фото, чеки, претензии, горячее предложение | `orderbot/handlers_photos.py` |
+| Касса, сотрудники, смены | `orderbot/handlers_shift.py` |
+| Оценки, опрос, курс валюты | `orderbot/handlers_feedback.py` |
+| Склад, качество, словарь | `orderbot/handlers_stock.py` |
+| Цены от закупки, наценки | `orderbot/handlers_prices.py` |
 | Заказ клиента | `orderbot/handlers_client.py` |
 | Панель доставщика | `orderbot/handlers_courier.py` |
 | Отчёты, деньги, рассылка | `orderbot/handlers_reports.py` |

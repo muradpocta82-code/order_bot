@@ -101,6 +101,18 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
     return chunks
 
 
+def parse_amount(text: str) -> float | None:
+    """Разбирает сумму из сообщения: «450», «1 200,50», «$30»."""
+    raw = (text or "").replace(",", ".").replace(" ", "").replace("$", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value <= 0 or value > 1_000_000:
+        return None
+    return round(value, 2)
+
+
 def money(value: float | None) -> str:
     if value is None:
         return "—"

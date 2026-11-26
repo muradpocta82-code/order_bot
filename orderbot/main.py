@@ -619,6 +619,34 @@ def _week_key(value: str) -> tuple[int, int] | None:
     return (iso[0], iso[1])
 
 
+async def _parse_quality_line(db: Database) -> list[str]:
+    """Качество разбора за неделю: фото-списки и другие источники (E9)."""
+    lines: list[str] = []
+    try:
+        rows = await db.feedback_by_source(7)
+    except Exception as exc:  # noqa: BLE001 — отчёт не должен падать из-за метрики
+        log.info("Не собрал качество разбора для отчёта: %s", exc)
+        return lines
+    names = {"text": "текст", "voice": "голос", "photo": "фото", "webapp": "мини-апп"}
+    parts: list[str] = []
+    for row in rows:
+        ok = int(row.get("ok") or 0)
+        fix = int(row.get("fix") or 0)
+        total = ok + fix
+        if not total:
+            continue
+        source = str(row.get("source") or "неизвестно")
+        parts.append(
+            f"{names.get(source, source)} — поправили {fix} из {total} "
+            f"({fix / total * 100:.0f}%)"
+        )
+    if parts:
+        lines.append("")
+        lines.append("<b>Качество разбора за неделю</b>")
+        lines.extend(f"• {part}" for part in parts)
+    return lines
+
+
 async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
     manager = settings.manager_chat_id
     if manager is None:
@@ -666,6 +694,7 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
         for chef, seen in last_seen.items()
         if (now.replace(tzinfo=None) - seen).days >= 14
     ]
+    extra = await _parse_quality_line(db)
     text = weekly_report(
         orders,
         venues,
@@ -673,6 +702,7 @@ async def _weekly_report(bot: Bot, db: Database, settings: Settings) -> bool:
         dropped,
         start.strftime("%d.%m"),
         end.strftime("%d.%m"),
+        extra_lines=extra,
     )
     await _send_quiet(bot, manager, text)
     log.info("Недельный отчёт отправлен")
