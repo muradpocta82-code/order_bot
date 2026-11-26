@@ -1,0 +1,5 @@
+[
+  "ledger.py:20 open_amount() -> float",
+  "ledger.py:58 credit_plan(amount: float)",
+  "receipts.py:25 _amount() -> float"
+]
