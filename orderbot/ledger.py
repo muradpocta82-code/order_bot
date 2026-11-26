@@ -12,24 +12,29 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
-EPS = 0.005  # копейки/центы: меньше — считаем закрытым
+from .money import MoneyIn, to_money
+
+ZERO = Decimal("0.00")
+EPS = Decimal("0.005")  # копейки/центы: меньше — считаем закрытым
 
 
-def open_amount(order: dict[str, Any]) -> float:
+def open_amount(order: dict[str, Any]) -> Decimal:
     """Сколько ещё не закрыто по заказу (с учётом старого paid_amount)."""
     if str(order.get("status")) == "cancelled":
-        return 0.0
-    total = float(order.get("total") or 0)
-    paid = float(order.get("paid_amount") or 0)
-    credited = float(order.get("credited") or 0)
-    return max(0.0, round(total - paid - credited, 2))
+        return ZERO
+    total = to_money(order.get("total") or 0)
+    paid = to_money(order.get("paid_amount") or 0)
+    credited = to_money(order.get("credited") or 0)
+    left = total - paid - credited
+    return left if left > 0 else ZERO
 
 
 def fifo_allocate(
-    amount: float, orders: list[dict[str, Any]]
-) -> tuple[list[tuple[int, float]], float]:
+    amount: MoneyIn, orders: list[dict[str, Any]]
+) -> tuple[list[tuple[int, Decimal]], Decimal]:
     """Раскладывает сумму по заказам в порядке возрастания даты (FIFO).
 
     orders — список словарей с id, total, paid_amount, status (ожидается
@@ -37,10 +42,10 @@ def fifo_allocate(
     Возвращает ([(order_id, сумма)], остаток нераспределённых денег).
     Остаток > 0 значит, что клиент заплатил вперёд — это аванс.
     """
-    left = round(float(amount or 0), 2)
-    result: list[tuple[int, float]] = []
+    left = to_money(amount or 0)
+    result: list[tuple[int, Decimal]] = []
     if left <= 0:
-        return result, 0.0
+        return result, ZERO
     for order in orders:
         if left <= EPS:
             break
@@ -49,26 +54,26 @@ def fifo_allocate(
         debt = open_amount(order)
         if debt <= EPS:
             continue
-        part = round(min(debt, left), 2)
+        part = to_money(min(debt, left))
         result.append((int(order["id"]), part))
-        left = round(left - part, 2)
-    return result, max(0.0, left)
+        left = to_money(left - part)
+    return result, left if left > 0 else ZERO
 
 
 def credit_plan(
-    amount: float,
+    amount: MoneyIn,
     orders: list[dict[str, Any]],
     order_id: int | None = None,
-) -> tuple[list[tuple[int, float]], float]:
+) -> tuple[list[tuple[int, Decimal]], Decimal]:
     """Раскладка кредит-ноты: указанный заказ первым, дальше FIFO.
 
     Возвращает ([(order_id, сумма)], неприменённый остаток).
     Остаток > 0 — аванс, который уйдёт в следующий счёт.
     """
-    left = round(float(amount or 0), 2)
-    result: list[tuple[int, float]] = []
+    left = to_money(amount or 0)
+    result: list[tuple[int, Decimal]] = []
     if left <= 0:
-        return result, 0.0
+        return result, ZERO
     ordered = list(orders)
     if order_id is not None:
         first = [o for o in ordered if int(o["id"]) == int(order_id)]
@@ -82,36 +87,38 @@ def credit_plan(
         debt = open_amount(order)
         if debt <= EPS:
             continue
-        part = round(min(debt, left), 2)
+        part = to_money(min(debt, left))
         result.append((int(order["id"]), part))
-        left = round(left - part, 2)
-    return result, max(0.0, left)
+        left = to_money(left - part)
+    return result, left if left > 0 else ZERO
 
 
 def balances(
-    billed: dict[int, float],
-    paid: dict[int, float],
-    credited: dict[int, float] | None = None,
-) -> dict[int, float]:
+    billed: dict[int, Decimal],
+    paid: dict[int, Decimal],
+    credited: dict[int, Decimal] | None = None,
+) -> dict[int, Decimal]:
     """Долг по клиентам: выставлено − оплачено − зачтено."""
     credited = credited or {}
     clients = set(billed) | set(paid) | set(credited)
     return {
-        int(client): round(
-            billed.get(client, 0.0) - paid.get(client, 0.0) - credited.get(client, 0.0), 2
+        int(client): to_money(
+            to_money(billed.get(client, 0)) - to_money(paid.get(client, 0)) - to_money(credited.get(client, 0))
         )
         for client in clients
     }
 
 
 def differences(
-    old: dict[int, float], new: dict[int, float], tolerance: float = 0.01
-) -> dict[int, tuple[float, float]]:
+    old: dict[int, Decimal],
+    new: dict[int, Decimal],
+    tolerance: Decimal = Decimal("0.01"),
+) -> dict[int, tuple[Decimal, Decimal]]:
     """Расхождения между старым расчётом долга и книгой: client → (old, new)."""
-    result: dict[int, tuple[float, float]] = {}
+    result: dict[int, tuple[Decimal, Decimal]] = {}
     for client in set(old) | set(new):
-        old_value = round(float(old.get(client, 0.0)), 2)
-        new_value = round(float(new.get(client, 0.0)), 2)
+        old_value = to_money(old.get(client, 0))
+        new_value = to_money(new.get(client, 0))
         if abs(old_value - new_value) > tolerance:
             result[int(client)] = (old_value, new_value)
     return result

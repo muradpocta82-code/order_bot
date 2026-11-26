@@ -7,7 +7,10 @@ Vision-модель читает сумму, валюту и дату перев
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
+
+from .money import to_money
 
 RECEIPT_PROMPT = """На фото — чек или скриншот перевода. Верни СТРОГО один JSON без пояснений:
 {"amount": 123.45, "currency": "USD", "date": "2026-11-22", "merchant": "название получателя"}
@@ -22,15 +25,15 @@ RECEIPT_PROMPT = """На фото — чек или скриншот перев�
 TOLERANCE_PCT = 1.0
 
 
-def _amount(value: Any) -> float | None:
+def _amount(value: Any) -> Decimal | None:
     if value is None:
         return None
     text = str(value).replace(" ", "").replace(",", ".").replace("$", "").strip()
     try:
-        result = float(text)
-    except (TypeError, ValueError):
+        result = to_money(text)
+    except (TypeError, ValueError, ArithmeticError):
         return None
-    return round(result, 2) if result > 0 else None
+    return result if result > 0 else None
 
 
 def parse_receipt(data: dict[str, Any] | None) -> dict[str, Any]:
@@ -59,11 +62,11 @@ def verdict(
     amount = receipt.get("amount")
     if amount is None:
         return "unknown"
-    total = round(float(order_total or 0), 2)
+    total = to_money(order_total or 0)
     if total <= 0:
         return "unknown"
-    diff = abs(float(amount) - total)
-    allowed = max(0.01, total * float(tolerance_pct) / 100)
+    diff = abs(to_money(amount) - total)
+    allowed = max(Decimal("0.01"), total * to_money(tolerance_pct) / 100)
     return "match" if diff <= allowed else "mismatch"
 
 

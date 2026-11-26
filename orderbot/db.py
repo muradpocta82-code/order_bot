@@ -1188,7 +1188,7 @@ class Database:
                 str(receipt.get("date") or "")[:10] or None,
                 str(verdict)[:20],
                 str(provider or "")[:40],
-                _json.dumps(receipt, ensure_ascii=False),
+                _json.dumps(receipt, ensure_ascii=False, default=str),
             ),
         )
         row = await cursor.fetchone()
@@ -2131,7 +2131,7 @@ class Database:
         Старые поля заказа (payment_status/paid_amount) тоже обновляются —
         до полного перехода отчётов на книгу.
         """
-        from .ledger import fifo_allocate, open_amount
+        from .ledger import fifo_allocate
 
         assert self.conn is not None
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2155,7 +2155,7 @@ class Database:
                 (payment_id, int(order_id), part, now),
             )
             order = by_id[order_id]
-            paid_total = round(float(order.get("paid_amount") or 0) + part, 2)
+            paid_total = round(float(order.get("paid_amount") or 0) + float(part), 2)
             total = float(order.get("total") or 0)
             closed = paid_total + 0.005 >= total
             await self.conn.execute(
