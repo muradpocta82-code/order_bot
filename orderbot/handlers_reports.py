@@ -54,6 +54,23 @@ log = logging.getLogger(__name__)
 router = Router(name="orderbot_reports")
 
 
+@router.message(Command("pilot"))
+async def cmd_pilot(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Метрики пилота: что бот реально дал за месяц (H5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from orderbot.pilot import text as pilot_text
+
+    days = 30
+    raw = (command.args or "").strip()
+    if raw.isdigit():
+        days = max(1, min(365, int(raw)))
+    stats = await db.pilot_stats(days)
+    await message.answer(pilot_text(stats, days))
+
+
 @router.message(Command("analytics"))
 async def cmd_analytics(
     message: Message, command: CommandObject, db: Database, settings: Settings

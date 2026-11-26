@@ -964,6 +964,49 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             log.warning("Событие разбора не записано: %s", exc)
 
+    async def pilot_stats(self, days: int = 30) -> dict[str, Any]:
+        """Метрики пилота: заказы, источники, скорость, претензии (H5)."""
+        assert self.conn is not None
+        since = (datetime.now() - timedelta(days=max(1, int(days)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS revenue, "
+            "COALESCE(AVG(questions), 0) AS avg_q, "
+            "COALESCE(SUM(CASE WHEN questions = 0 THEN 1 ELSE 0 END), 0) AS clean, "
+            "COUNT(DISTINCT chef_id) AS clients "
+            "FROM orders WHERE created_at >= %s AND status != 'cancelled'",
+            (since,),
+        )
+        row = dict(await cursor.fetchone() or {})
+        cursor = await self.conn.execute(
+            "SELECT COALESCE(NULLIF(source, ''), 'неизвестно') AS source, "
+            "COUNT(*) AS n FROM orders "
+            "WHERE created_at >= %s AND status != 'cancelled' "
+            "GROUP BY 1 ORDER BY n DESC",
+            (since,),
+        )
+        sources = [dict(item) for item in await cursor.fetchall()]
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM claims WHERE created_at >= %s",
+            (since,),
+        )
+        claims_row = dict(await cursor.fetchone() or {})
+        ops = await self.ops_stats(days)
+        failed_total = sum(int(item.get("n") or 0) for item in ops.get("failed") or [])
+        return {
+            "orders": int(row.get("orders") or 0),
+            "revenue": float(row.get("revenue") or 0),
+            "avg_q": float(row.get("avg_q") or 0),
+            "clean": int(row.get("clean") or 0),
+            "clients": int(row.get("clients") or 0),
+            "sources": sources,
+            "claims": int(claims_row.get("n") or 0),
+            "failed_total": failed_total,
+            "pack_avg": ops.get("pack_avg"),
+            "deliver_avg": ops.get("deliver_avg"),
+        }
+
     async def ops_stats(self, days: int = 30) -> dict[str, Any]:
         """Скорость работы и причины сбоев — из журнала событий заказов."""
         assert self.conn is not None

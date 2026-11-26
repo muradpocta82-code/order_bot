@@ -2473,6 +2473,158 @@ async def test_receipts_db() -> None:
             await db.close()
 
 
+def test_pilot_metrics() -> None:
+    print("\n[метрики пилота (H5)]")
+    from orderbot.pilot import share, source_name, text as pilot_text
+
+    check("доля считается", share(5, 20) == 25.0, str(share(5, 20)))
+    check("доля без деления на ноль", share(5, 0) == 0.0)
+    check("источник по-русски", source_name("voice") == "голос", source_name("voice"))
+    check("неизвестный источник", source_name("x") == "x", source_name("x"))
+    check("пустой источник", source_name(None) == "неизвестно", source_name(None))
+
+    empty = pilot_text({"orders": 0}, 30)
+    check("пустой пилот", "Заказов пока нет" in empty, empty)
+
+    stats = {
+        "orders": 40,
+        "revenue": 2000.0,
+        "clients": 8,
+        "avg_q": 1.5,
+        "clean": 30,
+        "claims": 2,
+        "failed_total": 1,
+        "pack_avg": 35.0,
+        "deliver_avg": 50.0,
+        "sources": [
+            {"source": "text", "n": 20},
+            {"source": "voice", "n": 15},
+            {"source": "manual", "n": 5},
+        ],
+    }
+    text = pilot_text(stats, 30)
+    check("заказы и выручка", "40" in text and "2000.00" in text, text)
+    check("средний чек", "50.00" in text, text)
+    check("клиенты и заказы на клиента", "8" in text and "5.0" in text, text)
+    check("доля через бота 87.5%", "88%" in text or "87.5%" in text, text)
+    check("источники по-русски", "текст — 20" in text and "голос — 15" in text, text)
+    check("без вопросов", "75%" in text, text)
+    check("время сборки", "35 мин" in text, text)
+    check("время доставки", "50 мин" in text, text)
+    check("претензии", "Претензий" in text and "5.0%" in text, text)
+    check("сбои доставки", "Сбоев доставки" in text, text)
+
+
+async def test_pilot_db() -> None:
+    print("\n[метрики пилота в базе (H5)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            client = 9901
+            await db.ensure_user(client, "Пилот Тест")
+            for index, source in enumerate(("text", "voice", "voice")):
+                await db.create_order(
+                    {
+                        "id": f"pl-{index}",
+                        "chat_id": client,
+                        "user_id": client,
+                        "delivery_date": "2026-11-24",
+                        "delivery_time": "09:00–12:00",
+                        "source": source,
+                    },
+                    [{"catalog_id": 4, "name": "Куриное филе", "qty": 1,
+                      "unit": "кг", "price": 10.0, "total": 10.0}],
+                    None,
+                )
+            stats = await db.pilot_stats(30)
+            check("заказы посчитаны", stats["orders"] == 3, str(stats))
+            check("выручка посчитана", round(stats["revenue"], 2) == 30.0, str(stats))
+            check("клиент один", stats["clients"] == 1, str(stats))
+            by_source = {row["source"]: int(row["n"]) for row in stats["sources"]}
+            check("источники посчитаны", by_source.get("voice") == 2, str(by_source))
+            check("есть поля скорости", "pack_avg" in stats and "deliver_avg" in stats, str(stats))
+        finally:
+            await db.close()
+
+
+def test_tuning() -> None:
+    print("\n[пороги и тексты без деплоя (I5)]")
+    from orderbot import tuning
+
+    check("ключ нормализуется", tuning.clean_key(" ETA_Spread-Min ") == "eta_spread_min")
+    check("значение в пределах", tuning.parse_value("eta_spread_min", "20") == 20.0)
+    check("запятая вместо точки", tuning.parse_value("receipt_tolerance_pct", "1,5") == 1.5)
+    check("процент со знаком", tuning.parse_value("receipt_tolerance_pct", "2%") == 2.0)
+    check("слишком много", tuning.parse_value("eta_spread_min", "500") is None)
+    check("слишком мало", tuning.parse_value("stock_warn_threshold", "-1") is None)
+    check("мусор", tuning.parse_value("eta_spread_min", "abc") is None)
+    check("неизвестный ключ", tuning.parse_value("nope", "5") is None)
+    check("целое печатается без дробей", tuning.format_value("eta_spread_min", 20.0) == "20")
+    check("дробное печатается", tuning.format_value("receipt_tolerance_pct", 1.5) == "1.5")
+    lines = tuning.list_lines({})
+    check("список порогов", len(lines) == len(tuning.LIMITS), str(len(lines)))
+    check("в списке видно значение", any("4" in line for line in lines), str(lines))
+    marked = tuning.list_lines({"eta_spread_min": 20.0})
+    check("изменённый помечен", any("изменено" in line for line in marked), str(marked))
+
+    parsed = tuning.parse_text_assignment("edit_hint = изменить  до 18:00")
+    check("разбор текста", parsed == ("edit_hint", "изменить до 18:00"), str(parsed))
+    check("неизвестный ключ текста", tuning.parse_text_assignment("nope = текст") is None)
+    check("пустой текст", tuning.parse_text_assignment("edit_hint =   ") is None)
+    check("без равно", tuning.parse_text_assignment("edit_hint текст") is None)
+    check("длинный текст обрезается", len(tuning.parse_text_assignment("edit_hint = " + "а" * 900)[1]) == 600)
+    check("проверка ключа текста", tuning.unknown_text_key("edit_hint") is False)
+    check("проверка чужого ключа", tuning.unknown_text_key("nope") is True)
+
+
+async def test_tuning_db() -> None:
+    print("\n[пороги и тексты в базе (I5)]")
+    if not TEST_URL:
+        print("  — пропущено: нужна тестовая PostgreSQL-база")
+        return
+    from orderbot import tuning
+    from orderbot.db import reset_test_database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "unused.db", TEST_URL)
+        await db.connect()
+        try:
+            await reset_test_database(db)
+            check(
+                "порог по умолчанию",
+                await tuning.threshold(db, "forecast_min_samples") == 4.0,
+            )
+            await db.set_setting("tune:forecast_min_samples", "6")
+            check(
+                "порог из настроек",
+                await tuning.threshold(db, "forecast_min_samples") == 6.0,
+            )
+            await db.set_setting("tune:forecast_min_samples", "мусор")
+            check(
+                "мусор в настройке — значение по умолчанию",
+                await tuning.threshold(db, "forecast_min_samples") == 4.0,
+            )
+            default = await tuning.text(db, "edit_hint", "по умолчанию")
+            check("текст по умолчанию", default == "по умолчанию", default)
+            await db.set_setting("text:edit_hint", "изменить до 18:00")
+            changed = await tuning.text(db, "edit_hint", "по умолчанию")
+            check("текст из настроек", changed == "изменить до 18:00", changed)
+            await db.set_setting("text:edit_hint", "")
+            check(
+                "пустой текст — снова по умолчанию",
+                await tuning.text(db, "edit_hint", "по умолчанию") == "по умолчанию",
+            )
+        finally:
+            await db.close()
+
+
 def test_suppliers_and_windows() -> None:
     print("\n[поставщики, окно правок, выгрузка модели]")
     import shutil
@@ -3421,6 +3573,10 @@ async def main() -> int:
     await test_shadow_db()
     test_forecast()
     await test_forecast_db()
+    test_pilot_metrics()
+    await test_pilot_db()
+    test_tuning()
+    await test_tuning_db()
     test_receipts()
     await test_receipts_db()
     await test_migrations_on_copy()

@@ -79,7 +79,10 @@ async def collect(
 
         target = _date.fromisoformat(str(day))
         history = await db.weekday_history(56)
-        add_forecasts(rows, history, target.weekday())
+        from .tuning import threshold as tune_threshold
+
+        minimum = int(await tune_threshold(db, "forecast_min_samples"))
+        add_forecasts(rows, history, target.weekday(), min_samples=minimum)
     except Exception:
         for row in rows:
             row.setdefault("forecast", {"ready": False, "samples": 0, "avg": 0.0})

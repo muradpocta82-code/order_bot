@@ -112,6 +112,101 @@ async def cmd_quality(message: Message, db: Database, settings: Settings) -> Non
     await message.answer(text, reply_markup=manager_back_keyboard())
 
 
+@router.message(Command("tune"))
+async def cmd_tune(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Пороги без деплоя: /tune — список, /tune ключ значение — изменить (I5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    from orderbot import tuning
+
+    parts = (command.args or "").strip().split()
+    if len(parts) < 2:
+        values: dict[str, object] = {}
+        for key in tuning.LIMITS:
+            raw = (await db.get_setting(f"tune:{key}", "") or "").strip()
+            if raw:
+                values[key] = tuning.parse_value(key, raw)
+        lines = ["⚙️ <b>Пороги</b>", ""]
+        lines.extend(tuning.list_lines(values))
+        lines.append("")
+        lines.append("Изменить: <code>/tune forecast_min_samples 6</code>")
+        await message.answer("\n".join(lines), reply_markup=manager_back_keyboard())
+        return
+    key = tuning.clean_key(parts[0])
+    value = tuning.parse_value(key, parts[1])
+    if key not in tuning.LIMITS:
+        await message.answer(
+            "Неизвестный порог. Список: /tune"
+        )
+        return
+    if value is None:
+        low, high, _default, _desc = tuning.LIMITS[key]
+        await message.answer(
+            f"Для <code>{key}</code> нужно число от {low:g} до {high:g}."
+        )
+        return
+    await db.set_setting(f"tune:{key}", tuning.format_value(key, value))
+    await message.answer(
+        f"⚙️ <code>{key}</code> = <b>{tuning.format_value(key, value)}</b>. "
+        "Применяется сразу, без деплоя."
+    )
+
+
+@router.message(Command("text"))
+async def cmd_text(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Тексты без деплоя: /text — список, /text ключ = текст (I5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    from orderbot import tuning
+
+    raw = command.args or ""
+    if "=" not in raw:
+        lines = ["📝 <b>Тексты</b>", ""]
+        for key, desc in tuning.TEXT_KEYS.items():
+            value = (await db.get_setting(f"text:{key}", "") or "").strip()
+            mark = f" → «{esc(value[:80])}»" if value else " (по умолчанию)"
+            lines.append(f"• <code>{key}</code>{mark}\n  <i>{desc}</i>")
+        lines.append("")
+        lines.append("Изменить: <code>/text edit_hint = изменить до 18:00</code>")
+        await message.answer("\n".join(lines), reply_markup=manager_back_keyboard())
+        return
+    parsed = tuning.parse_text_assignment(raw)
+    if parsed is None:
+        await message.answer(
+            "Формат: <code>/text ключ = текст</code>. Список ключей: /text"
+        )
+        return
+    key, value = parsed
+    await db.set_setting(f"text:{key}", value)
+    await message.answer(
+        f"📝 Текст <code>{key}</code> обновлён. Применяется сразу."
+    )
+
+
+@router.message(Command("text_del"))
+async def cmd_text_del(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Вернуть текст по умолчанию (I5)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer("Команда доступна только менеджеру.")
+        return
+    from orderbot import tuning
+
+    key = tuning.clean_key(command.args)
+    if tuning.unknown_text_key(key):
+        await message.answer("Неизвестный ключ. Список: /text")
+        return
+    await db.set_setting(f"text:{key}", "")
+    await message.answer(f"📝 Текст <code>{key}</code> вернулся к значению из кода.")
+
+
 @router.message(Command("aliases"))
 async def cmd_aliases(
     message: Message, db: Database, settings: Settings, catalog: Catalog

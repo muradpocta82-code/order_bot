@@ -76,6 +76,7 @@ from .formatting import (
 )
 from .locations import choice_text as location_choice_text
 from .receipts import short_text as receipts_short
+from .tuning import threshold as receipts_tolerance
 from .receipts import verdict as receipts_verdict
 from .keyboards import (
     problem_keyboard,
@@ -192,6 +193,9 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /pricenew — цены на завтра из закупки
 /markup — наценки по категориям
 /quality — качество разбора
+/pilot — метрики пилота: /pilot или /pilot 7
+/tune — пороги: /tune и /tune ключ значение
+/text — тексты: /text и /text ключ = текст
 /aliases — общий словарь: /aliases
 /alias_add — добавить фразу: /alias_add с/к бекон = бекон
 /discount — скидка клиенту: /discount 123456789 5
@@ -3041,7 +3045,14 @@ async def on_photo(
             total = float(order.get("total") or 0)
             # G3: пробуем прочитать сумму чека и сверить с заказом.
             receipt = await _read_receipt_photo(message.bot, photo, ai)
-            check_verdict = receipts_verdict(receipt, total) if receipt else "unknown"
+            tolerance = 1.0
+            try:
+                tolerance = await receipts_tolerance(db, "receipt_tolerance_pct")
+            except Exception:
+                tolerance = 1.0
+            check_verdict = (
+                receipts_verdict(receipt, total, tolerance) if receipt else "unknown"
+            )
             if receipt:
                 await db.save_receipt_check(
                     int(order["id"]),
