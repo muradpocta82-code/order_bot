@@ -222,8 +222,3 @@ async def cmd_staff_del(
     await load_staff_from_db(db)
     await message.answer("Удалён." if removed else "Такого сотрудника нет.")
 
-
-# I1: фото, чеки и претензии — отдельный роутер.
-from .handlers_photos import router as _photos_router  # noqa: E402
-
-router.include_router(_photos_router)
