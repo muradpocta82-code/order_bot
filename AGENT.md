@@ -38,6 +38,8 @@ Telegram-бот приёма заказов для оптового постав
 | Время старта и последняя ошибка | `orderbot/runtime.py` |
 | USDT в сети TON | `orderbot/tonflow.py`, `tonpay.py` |
 | Мини-приложение каталога (порт 8443) | `webapp/server.py`, `webapp/index.html` |
+| Страница владельца `/owner` | `webapp/owner.py` |
+| Выгрузка в Google Sheets (/export, /sheets) | `orderbot/sheets.py`, `docs/SHEETS.md` |
 | Бэкап базы (отдельная служба) | `scripts/backup_db.py` + `deploy/order_bot_backup.*` |
 | Диагностика развёртывания | `scripts/doctor.py` |
 | Тесты | `scripts/test_all.sh` (selftest 147, integration 82, delivery 16) |

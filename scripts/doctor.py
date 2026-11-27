@@ -134,6 +134,23 @@ def check_deployment(settings) -> bool:
         f"{'настроена' if offsite else 'не настроена — docs/OFFSITE_BACKUP.md'}"
     )
 
+    # F3: страница владельца в мини-приложении.
+    owner_token = (os.getenv("OWNER_WEB_TOKEN") or "").strip()
+    webapp_url = (os.getenv("CATALOG_WEBAPP_URL") or "").strip()
+    if not owner_token or not webapp_url:
+        try:
+            for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+                if line.startswith("OWNER_WEB_TOKEN=") and not owner_token:
+                    owner_token = line.split("=", 1)[1].strip()
+                if line.startswith("CATALOG_WEBAPP_URL=") and not webapp_url:
+                    webapp_url = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    print(
+        f"{OK if owner_token and webapp_url else WARN} страница владельца (/owner): "
+        f"{'включена' if owner_token and webapp_url else 'не настроена'}"
+    )
+
     # F2: выгрузка в Google Sheets (не блокирует работу бота).
     sa_file = (os.getenv("GOOGLE_SA_FILE") or "").strip()
     sheets_id = (os.getenv("SHEETS_ID") or "").strip()

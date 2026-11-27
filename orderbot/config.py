@@ -94,6 +94,7 @@ class Settings:
     llm_cost_per_call: float = 0.002
     google_sa_file: str = ""
     sheets_id: str = ""
+    owner_web_token: str = ""
 
     @property
     def ton_enabled(self) -> bool:
@@ -149,4 +150,5 @@ def load_settings() -> Settings:
         llm_cost_per_call=_float("LLM_COST_PER_CALL", 0.002),
         google_sa_file=_str("GOOGLE_SA_FILE"),
         sheets_id=_str("SHEETS_ID"),
+        owner_web_token=_str("OWNER_WEB_TOKEN"),
     )

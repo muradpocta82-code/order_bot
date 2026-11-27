@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1745,6 +1746,34 @@ async def cb_claim_action(
         except Exception:
             pass
     await callback.answer("Записал решение")
+
+
+@router.message(Command("owner"))
+async def cmd_owner(message: Message, settings: Settings) -> None:
+    """Ссылка на страницу владельца (F3): сегодня, касса, долги, доставки."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    token = str(getattr(settings, "owner_web_token", "") or "").strip()
+    base = str(os.getenv("CATALOG_WEBAPP_URL", "") or "").strip()
+    if not token:
+        await message.answer(
+            "Страница владельца выключена: в .env нет OWNER_WEB_TOKEN.\n"
+            "Пока доступны команды /today, /debt, /cash, /deliveries."
+        )
+        return
+    if not base:
+        await message.answer(
+            "Страница владельца готова, но не задан CATALOG_WEBAPP_URL — "
+            "адрес мини-приложения в .env."
+        )
+        return
+    link = base.rstrip("/") + "/owner?t=" + token
+    await message.answer(
+        "📱 <b>Сводка владельца</b> — сегодня, касса, долги, доставки:\n"
+        f"{esc(link)}\n\n"
+        "Ссылка личная: в ней ключ доступа, в чужие руки не передавайте. "
+        "Обновляется при каждом открытии."
+    )
 
 
 @router.message(Command("sheets"))

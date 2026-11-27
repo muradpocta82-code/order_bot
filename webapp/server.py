@@ -296,9 +296,38 @@ async def health(request: web.Request) -> web.Response:
     )
 
 
+def _owner_module():
+    """Модуль страницы владельца: рядом лежит owner.py (служба запускает скрипт)."""
+    from importlib import import_module
+
+    try:
+        return import_module("webapp.owner")
+    except ModuleNotFoundError:
+        return import_module("owner")
+
+
+def _owner_token() -> str:
+    """Токен страницы владельца (F3): из окружения или из .env."""
+    return _owner_module().owner_token()
+
+
+async def owner(request: web.Request) -> web.Response:
+    """F3: сводка владельца — сегодня, касса, долги, доставки."""
+    owner_page = _owner_module()
+
+    token = _owner_token()
+    if not token:
+        return web.Response(status=403, text="страница владельца выключена")
+    if not hmac.compare_digest(str(request.query.get("t", "")), token):
+        return web.Response(status=403, text="ссылка недействительна")
+    data = await asyncio.to_thread(owner_page.collect)
+    return web.Response(text=owner_page.render(data), content_type="text/html")
+
+
 def main() -> None:
     app = web.Application()
     app.router.add_get("/", index)
+    app.router.add_get("/owner", owner)
     app.router.add_get("/health", health)
     app.router.add_post("/api/catalog", catalog)
     app.router.add_post("/api/order", create_order)

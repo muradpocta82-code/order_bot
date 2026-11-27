@@ -1741,6 +1741,37 @@ async def test_sheets() -> None:
     check("статус без настроек — неизвестно", ok is None and "не найден" in reason, reason)
 
 
+def test_owner_page() -> None:
+    print("\n[страница владельца (F3)]")
+    from datetime import date
+
+    from webapp import owner as page
+
+    data = {
+        "day": date(2026, 11, 26),
+        "errors": [],
+        "today": {"orders": 3, "revenue": 120.5, "avg": 40.17, "by_status": {"собран": 2}},
+        "debts": [{"client_id": 1, "name": "Бар <Центр>", "open": 55.0}],
+        "debt_total": 55.0,
+        "cash": {"orders": 2, "expected": 80.0, "received": 78.0, "diff": -2.0, "handed": 0.0},
+        "deliveries": [
+            {"id": 7, "name": "Кафе", "total": 40.0, "status": "в пути", "slot": "10:00-12:00"}
+        ],
+    }
+    html = page.render(data)
+    check("в странице есть суммы", "$120.50" in html, html[:200])
+    check("в странице есть долги", "$55" in html, "")
+    check("в странице есть доставки", "10:00-12:00" in html, "")
+    check("имя экранируется", "&lt;Центр&gt;" in html, "")
+    check("страница закрыта от индексации", "noindex" in html, "")
+    empty = page.render(
+        {"day": date(2026, 11, 26), "errors": ["база недоступна"], "today": {},
+         "debts": [], "debt_total": 0.0, "cash": {}, "deliveries": []}
+    )
+    check("ошибка видна на странице", "база недоступна" in empty, "")
+    check("пустой день не падает", "Долгов нет" in empty, "")
+
+
 def test_eta_and_envcheck() -> None:
     print("\n[окно прибытия и гигиена секретов]")
     import tempfile
@@ -3615,6 +3646,7 @@ async def main() -> int:
     test_ai_cost()
     test_eta_and_envcheck()
     await test_sheets()
+    test_owner_page()
     test_suppliers_and_windows()
     test_scripts_quality()
     test_delivery_survey()
