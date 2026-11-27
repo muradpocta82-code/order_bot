@@ -3274,6 +3274,56 @@ class Database:
         )
         await self.conn.commit()
 
+    async def client_personal_data(self, user_id: int) -> dict[str, Any]:
+        """Что о клиенте хранится — для команды /mydata (защита персональных данных)."""
+        assert self.conn is not None
+        user = await self.get_user(user_id) or {}
+        cursor = await self.conn.execute(
+            "SELECT name, address, lat, lon FROM locations WHERE client_id = %s",
+            (int(user_id),),
+        )
+        spots = [dict(row) for row in await cursor.fetchall()]
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM orders WHERE chef_id = %s AND status != 'cancelled'",
+            (int(user_id),),
+        )
+        row = await cursor.fetchone()
+        return {
+            "user": user,
+            "locations": spots,
+            "orders": int((row or {}).get("n") or 0),
+        }
+
+    async def forget_client(self, user_id: int) -> dict[str, Any]:
+        """Удаляет персональные данные клиента (право на удаление).
+
+        Убираем то, что нужно только для доставки: имя, телефон, адрес, геопин,
+        точки сети, @username. Заказы, суммы и даты остаются — это учёт и
+        бухгалтерия, но имя в заказах заменяется на «клиент #id».
+        """
+        assert self.conn is not None
+        client_id = int(user_id)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self.conn.execute(
+            "DELETE FROM locations WHERE client_id = %s", (client_id,)
+        )
+        spots = int(cursor.rowcount or 0)
+        await self.conn.execute(
+            "UPDATE users SET name = %s, username = NULL, phone = NULL, "
+            "address = NULL, lat = NULL, lon = NULL, updated_at = %s "
+            "WHERE user_id = %s",
+            ("удалено", now, client_id),
+        )
+        cursor = await self.conn.execute(
+            "UPDATE orders SET chef_name = %s, chef_username = NULL "
+            "WHERE chef_id = %s",
+            (f"клиент #{client_id}", client_id),
+        )
+        orders = int(cursor.rowcount or 0)
+        await self.conn.commit()
+        await self.set_setting(f"forgotten:{client_id}", now)
+        return {"locations": spots, "orders": orders, "at": now}
+
     async def set_user_phone(self, user_id: int, phone: str) -> None:
         assert self.conn is not None
         await self.conn.execute(

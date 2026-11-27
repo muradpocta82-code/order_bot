@@ -577,6 +577,20 @@ def retry_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def forget_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение удаления личных данных: «да» / «нет»."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, удалить мои данные", callback_data="pd:forget"
+                )
+            ],
+            [InlineKeyboardButton(text="Нет, оставить", callback_data="cl:menu")],
+        ]
+    )
+
+
 def client_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

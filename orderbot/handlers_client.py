@@ -69,6 +69,7 @@ from .keyboards import (
     client_reply_keyboard,
     client_order_keyboard,
     edit_confirm_keyboard,
+    forget_confirm_keyboard,
     qty_keyboard,
     retry_keyboard,
     slots_keyboard,
@@ -1300,6 +1301,67 @@ async def cb_price_off(callback: CallbackQuery, db: Database) -> None:
     except TelegramBadRequest:
         pass
     await callback.answer("Отключено")
+
+
+@router.message(Command("mydata"))
+async def cmd_mydata(message: Message, db: Database, settings: Settings) -> None:
+    """Что о клиенте хранится и как это удалить (персональные данные)."""
+    user = await db.get_user(message.from_user.id) or {}
+    if _is_manager(settings, message.from_user.id, message.chat.id):
+        await message.answer(
+            "Это команда клиента: показывает и удаляет личные данные повара. "
+            "Свои данные менеджера тут не хранятся."
+        )
+        return
+    data = await db.client_personal_data(message.from_user.id)
+    profile = data.get("user") or {}
+    lines = ["🔐 <b>Что бот знает о вас</b>", ""]
+    lines.append(f"Имя: {esc(profile.get('name') or '—')}")
+    if profile.get("phone"):
+        lines.append(f"Телефон: {esc(profile.get('phone'))}")
+    if profile.get("address"):
+        lines.append(f"Адрес: {esc(profile.get('address'))}")
+    if profile.get("lat") is not None and profile.get("lon") is not None:
+        lines.append("Геопин: сохранён")
+    lines.append(f"Точек сети: {len(data.get('locations') or [])}")
+    lines.append(f"Заказов: {data.get('orders', 0)}")
+    lines.append("")
+    lines.append(
+        "Заказы, суммы и даты храним для учёта — их не удаляем. "
+        "Личные данные (имя, телефон, адрес, геопин, @username) можно удалить: "
+        "после этого курьеру придётся диктовать адрес заново."
+    )
+    await message.answer(
+        "\n".join(lines), reply_markup=forget_confirm_keyboard()
+    )
+
+
+@router.callback_query(F.data == "pd:forget")
+async def cb_forget_data(
+    callback: CallbackQuery, db: Database, settings: Settings
+) -> None:
+    """Удаление личных данных по просьбе клиента."""
+    result = await db.forget_client(callback.from_user.id)
+    text = (
+        "🧹 Готово: имя, телефон, адрес, геопин и точки сети удалены.\n"
+        f"Заказов в учёте осталось: {result['orders']} — без ваших личных данных.\n\n"
+        "Если снова сделаете заказ — попросим адрес и телефон заново."
+    )
+    try:
+        await callback.message.edit_text(text)
+    except Exception:
+        await callback.message.answer(text)
+    manager = settings.manager_chat_id
+    if manager:
+        try:
+            await callback.bot.send_message(
+                int(manager),
+                f"🧹 Клиент id {callback.from_user.id} удалил свои личные данные "
+                f"(удалено точек: {result['locations']}, заказов в учёте: {result['orders']}).",
+            )
+        except Exception:
+            log.info("Не сообщил менеджеру об удалении данных клиента")
+    await callback.answer("Удалено")
 
 
 @router.message(Command("report"))

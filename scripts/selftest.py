@@ -1741,6 +1741,41 @@ async def test_sheets() -> None:
     check("статус без настроек — неизвестно", ok is None and "не найден" in reason, reason)
 
 
+async def test_forget_client() -> None:
+    print("\n[удаление личных данных клиента]")
+    from orderbot.config import load_settings
+    from orderbot.db import Database
+
+    settings = load_settings()
+    db = Database(settings.db_path, TEST_URL or settings.database_url)
+    await db.connect()
+    try:
+        client = 880000111
+        await db.ensure_user(client, "Повар Тест", "test_chef")
+        await db.set_user_phone(client, "+998 90 111 22 33")
+        await db.set_user_address(client, "📍 41.31, 69.24")
+        await db.set_user_coords(client, 41.31, 69.24)
+        await db.add_location(client, "Точка", "ул. Тестовая 1")
+        data = await db.client_personal_data(client)
+        check("личные данные видны", data["user"]["phone"] is not None, str(data["user"]))
+        check("точка учтена", len(data["locations"]) == 1, str(len(data["locations"])))
+        result = await db.forget_client(client)
+        check("результат сообщает точки", result["locations"] == 1, str(result))
+        after = await db.get_user(client) or {}
+        check("имя обезличено", after.get("name") == "удалено", str(after.get("name")))
+        check("телефон удалён", after.get("phone") is None, str(after.get("phone")))
+        check("адрес удалён", after.get("address") is None, str(after.get("address")))
+        check("геопин удалён", after.get("lat") is None, str(after.get("lat")))
+        check("username удалён", after.get("username") is None, str(after.get("username")))
+        left = await db.client_locations(client)
+        check("точки сети удалены", left == [], str(left))
+        check("отметка об удалении", bool(await db.get_setting(f"forgotten:{client}", "")), "")
+        data2 = await db.client_personal_data(client)
+        check("повторно удалять нечего", len(data2["locations"]) == 0, str(data2["locations"]))
+    finally:
+        await db.close()
+
+
 def test_owner_page() -> None:
     print("\n[страница владельца (F3)]")
     from datetime import date
@@ -3647,6 +3682,7 @@ async def main() -> int:
     test_eta_and_envcheck()
     await test_sheets()
     test_owner_page()
+    await test_forget_client()
     test_suppliers_and_windows()
     test_scripts_quality()
     test_delivery_survey()
