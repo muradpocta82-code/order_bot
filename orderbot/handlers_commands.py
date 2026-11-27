@@ -49,6 +49,8 @@ from .keyboards import (
 from .notify import _courier_panel_text, _manager_panel_text
 from .onboarding import _profile_step
 from .roles import _back_keyboard, _is_courier, _is_manager, _is_staff
+from .sheets import append_rows as sheets_append
+from .sheets import ready as sheets_ready
 from .route import order_point
 from .runtime import BOT_STARTED_AT, _last_error
 from .stock import hidden_ids, resolve as resolve_stock
@@ -300,6 +302,26 @@ async def cmd_export(
                     order.get("status"),
                 ]
             )
+        # F2: если подключена таблица Google — дописываем те же строки туда.
+        if sheets_ready(settings):
+            rows = [
+                [
+                    str(order.get("created_at") or ""),
+                    venues.get(int(order.get("chef_id") or 0))
+                    or order.get("chef_name")
+                    or "",
+                    "; ".join(
+                        f"{item.get('name')} — {format_qty(item.get('qty'))} "
+                        f"{plural(item.get('unit'), item.get('qty'))}"
+                        for item in order.get("items", [])
+                    ),
+                    float(order.get("total") or 0),
+                    str(order.get("status") or ""),
+                ]
+                for order in orders
+            ]
+            await sheets_append(settings, rows)
+
         exports = settings.data_dir / "exports"
         exports.mkdir(parents=True, exist_ok=True)
         path = exports / f"orders-{now.strftime('%Y%m%d-%H%M%S')}.xlsx"

@@ -1747,6 +1747,34 @@ async def cb_claim_action(
     await callback.answer("Записал решение")
 
 
+@router.message(Command("sheets"))
+async def cmd_sheets(message: Message, db: Database, settings: Settings) -> None:
+    """Статус выгрузки в Google Sheets (F2): /sheets."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from . import sheets
+
+    ok, reason = await sheets.check(settings)
+    if ok is True:
+        await message.answer(
+            "📊 Google Sheets подключён: /export N дней дописывает заказы "
+            f"в таблицу <code>{sheets.sheet_id(settings)}</code>.\n"
+            "Доступ выдан сервисному аккаунту. Проверка: " + reason + "."
+        )
+        return
+    if ok is False:
+        await message.answer(f"📊 Google Sheets не работает: {reason}.")
+        return
+    await message.answer(
+        "📊 Google Sheets пока не подключён: " + reason + ".\n\n"
+        "Что нужно от владельца: сервисный аккаунт Google (JSON с ключом), "
+        "таблица с доступом этому аккаунту и две строки в .env:\n"
+        "<code>GOOGLE_SA_FILE=/opt/order_bot/google-sa.json</code>\n"
+        "<code>SHEETS_ID=идентификатор_из_ссылки</code>\n\n"
+        "После этого /export будет дописывать заказы в таблицу."
+    )
+
+
 @router.message(Command("bonus"))
 async def cmd_bonus(
     message: Message, command: CommandObject, db: Database, settings: Settings

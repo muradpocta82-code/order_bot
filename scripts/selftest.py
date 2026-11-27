@@ -1719,6 +1719,28 @@ def test_ai_cost() -> None:
     check("без вызовов строка пустая", ac.weekly_line([], 10) == "")
 
 
+async def test_sheets() -> None:
+    print("\n[выгрузка в Google Sheets (F2)]")
+    from dataclasses import replace
+
+    from orderbot import sheets
+    from orderbot.config import load_settings
+
+    settings = load_settings()
+    off = replace(settings, google_sa_file="", sheets_id="")
+    check("без настроек выгрузка выключена", sheets.ready(off) is False)
+    check("без настроек статус — подсказка", sheets.credentials_path(off) is None)
+    half = replace(settings, google_sa_file="нет-такого-файла.json", sheets_id="abc")
+    check("нет файла ключа — выключено", sheets.ready(half) is False)
+    on = replace(settings, google_sa_file=str(BASE_DIR / "requirements.txt"), sheets_id="abc")
+    check("ключ и таблица есть — включено", sheets.ready(on) is True)
+    check("идентификатор берётся из настроек", sheets.sheet_id(on) == "abc")
+    added = await sheets.append_rows(off, [["тест"]])
+    check("пустая выгрузка не падает", added is False)
+    ok, reason = await sheets.check(off)
+    check("статус без настроек — неизвестно", ok is None and "не найден" in reason, reason)
+
+
 def test_eta_and_envcheck() -> None:
     print("\n[окно прибытия и гигиена секретов]")
     import tempfile
@@ -3592,6 +3614,7 @@ async def main() -> int:
     test_substitute_rules()
     test_ai_cost()
     test_eta_and_envcheck()
+    await test_sheets()
     test_suppliers_and_windows()
     test_scripts_quality()
     test_delivery_survey()

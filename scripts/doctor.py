@@ -134,6 +134,24 @@ def check_deployment(settings) -> bool:
         f"{'настроена' if offsite else 'не настроена — docs/OFFSITE_BACKUP.md'}"
     )
 
+    # F2: выгрузка в Google Sheets (не блокирует работу бота).
+    sa_file = (os.getenv("GOOGLE_SA_FILE") or "").strip()
+    sheets_id = (os.getenv("SHEETS_ID") or "").strip()
+    if not sa_file or not sheets_id:
+        try:
+            for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+                if line.startswith("GOOGLE_SA_FILE=") and not sa_file:
+                    sa_file = line.split("=", 1)[1].strip()
+                if line.startswith("SHEETS_ID=") and not sheets_id:
+                    sheets_id = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    sheets_ok = bool(sa_file and sheets_id and (BASE_DIR / sa_file).is_file())
+    print(
+        f"{OK if sheets_ok else WARN} выгрузка в Google Sheets: "
+        f"{'настроена' if sheets_ok else 'не настроена — /sheets, docs/SHEETS.md'}"
+    )
+
     files = sorted(
         int(p.name[:4])
         for p in (BASE_DIR / "migrations").glob("*.sql")
