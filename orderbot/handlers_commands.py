@@ -49,6 +49,7 @@ from .keyboards import (
 from .notify import _courier_panel_text, _manager_panel_text
 from .onboarding import _profile_step
 from .roles import _back_keyboard, _is_courier, _is_manager, _is_staff
+from .route import order_point
 from .runtime import BOT_STARTED_AT, _last_error
 from .stock import hidden_ids, resolve as resolve_stock
 from .texts import (
@@ -455,6 +456,7 @@ async def cmd_order(message: Message, command: CommandObject, db: Database, sett
             order["id"],
             str(order.get("status")),
             str(order.get("payment_status") or "unpaid"),
+            point=order_point(order),
         )
     else:
         keyboard = client_order_keyboard(order["id"])

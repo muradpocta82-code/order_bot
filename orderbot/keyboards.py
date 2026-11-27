@@ -148,9 +148,15 @@ def manager_status_keyboard(
 
 
 def courier_status_keyboard(
-    order_id: int, status: str, payment_status: str
+    order_id: int,
+    status: str,
+    payment_status: str,
+    point: tuple[float, float] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Кнопки доставщика: в путь, оплата, доставлено, проблема."""
+    """Кнопки доставщика: в путь, оплата, доставлено, проблема.
+
+    Если известна точка доставки, первой строкой — «Открыть в картах» (C12).
+    """
     if status in ("done", "cancelled", "failed"):
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -162,6 +168,16 @@ def courier_status_keyboard(
             ]
         )
     rows: list[list[InlineKeyboardButton]] = []
+    if point is not None:
+        from .route import maps_url
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🗺 Открыть в картах", url=maps_url(point)
+                )
+            ]
+        )
     if status == "ready":
         rows.append(
             [

@@ -22,11 +22,14 @@ from .eta import SPREAD_MIN as eta_spread
 from .eta import client_text as eta_client_text
 from .eta import travel_minutes as eta_travel
 from .eta import order_minutes as eta_order_minutes
+from .eta import minutes_late as eta_minutes_late
 from .eta import window_text as eta_window
+from .eta import late_manager_text as eta_late_manager
+from .eta import late_text as eta_late_text
 from .stock import consume_order
 from .db import Database
 from .formatting import esc, format_order, money
-from .route import maps_link, plan as route_plan, total_distance_km
+from .route import maps_link, order_point, plan as route_plan, total_distance_km
 from .keyboards import (
     failed_move_keyboard,
     client_order_keyboard,
@@ -104,7 +107,10 @@ async def cb_courier_card(
         order,
         title,
         courier_status_keyboard(
-            order_id, status, str(order.get("payment_status") or "unpaid")
+            order_id,
+            status,
+            str(order.get("payment_status") or "unpaid"),
+            point=order_point(order),
         ),
     )
     await callback.answer()
@@ -138,7 +144,10 @@ async def cb_courier_start(
         order,
         "🚚 Доставка",
         courier_status_keyboard(
-            order_id, "delivering", str(order.get("payment_status") or "unpaid")
+            order_id,
+            "delivering",
+            str(order.get("payment_status") or "unpaid"),
+            point=order_point(order),
         ),
     )
     if order.get("chef_id"):
@@ -152,9 +161,13 @@ async def cb_courier_start(
                 _speed(await db.get_setting("courier_speed_kmh", "")),
             )
             now = datetime.now(settings.timezone)
-            message_text = eta_client_text(
-                order_id, now, minutes, str(order.get("delivery_time") or "")
-            )
+            slot = str(order.get("delivery_time") or "")
+            message_text = eta_client_text(order_id, now, minutes, slot)
+            # C12: если в слот не успеваем — предупреждаем клиента и менеджера.
+            late = eta_minutes_late(now, minutes, slot)
+            if late:
+                message_text += "\n\n" + eta_late_text(order_id, slot, late)
+                await _warn_late(callback.bot, db, settings, order, slot, late)
             await _send_with_retry(
                 lambda: callback.bot.send_message(int(order["chef_id"]), message_text)
             )
@@ -213,6 +226,28 @@ async def cmd_depot(
         f"🏭 Склад сохранён: <code>{point[0]:.6f}, {point[1]:.6f}</code>.\n"
         "Теперь окно прибытия считается по расстоянию, если у клиента есть геопин."
     )
+
+
+async def _warn_late(
+    bot: Bot,
+    db: Database,
+    settings: Settings,
+    order: dict,
+    slot: str,
+    late: int,
+) -> None:
+    """C12: предупреждаем менеджера, что курьер не успевает в слот."""
+    manager = order.get("manager_chat_id") or settings.manager_chat_id
+    if not manager:
+        return
+    try:
+        await _send_with_retry(
+            lambda: bot.send_message(
+                int(manager), eta_late_manager(int(order["id"]), slot, late)
+            )
+        )
+    except Exception:
+        log.warning("Не удалось предупредить менеджера об опоздании №%s", order["id"])
 
 
 @router.message(Command("travel"))
@@ -282,7 +317,7 @@ async def cb_courier_pay(
         order,
         "🚚 Доставка",
         courier_status_keyboard(
-            order_id, str(order.get("status")), "paid"
+            order_id, str(order.get("status")), "paid", point=order_point(order)
         ),
     )
     if order.get("chef_id"):

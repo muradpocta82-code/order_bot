@@ -53,6 +53,7 @@ from orderbot.keyboards import (
     reminder_keyboard,
 )
 from orderbot.pricecast import send_morning_prices
+from orderbot.route import order_point
 from orderbot import pricereview as price_review
 from orderbot.aicost import WARN_SHARE as ai_warn_share
 from orderbot.aicost import budget_share as ai_budget_share
@@ -561,7 +562,10 @@ async def _resend_courier(bot: Bot, db: Database, settings: Settings) -> None:
                 order,
                 "🚚 Доставка",
                 courier_status_keyboard(
-                    order["id"], "ready", str(order.get("payment_status") or "unpaid")
+                    order["id"],
+                    "ready",
+                    str(order.get("payment_status") or "unpaid"),
+                    point=order_point(order),
                 ),
             )
             await db.mark_courier_notified(order["id"])

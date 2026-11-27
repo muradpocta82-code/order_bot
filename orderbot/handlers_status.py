@@ -36,6 +36,7 @@ from .notify import (
     _send_with_retry,
 )
 from .roles import _is_courier, _is_manager, _manager_ok
+from .route import order_point
 
 log = logging.getLogger(__name__)
 
@@ -152,7 +153,10 @@ async def cb_order_status(
             order,
             "🚚 Доставка",
             courier_status_keyboard(
-                order_id, "ready", str(order.get("payment_status") or "unpaid")
+                order_id,
+                "ready",
+                str(order.get("payment_status") or "unpaid"),
+                point=order_point(order),
             ),
         )
     except Exception:
@@ -247,6 +251,7 @@ async def cb_courier_view(
             order_id,
             str(order.get("status")),
             str(order.get("payment_status") or "unpaid"),
+            point=order_point(order),
         ),
     )
     await callback.answer()

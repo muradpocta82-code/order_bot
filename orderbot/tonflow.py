@@ -16,6 +16,7 @@ from .db import Database
 from .formatting import esc, format_order
 from .keyboards import courier_status_keyboard
 from .notify import _send_with_retry
+from .route import order_point
 from .tonpay import (
     TonPay,
     TonPayError,
@@ -142,7 +143,12 @@ async def _usdt_paid_notifications(
                 chat_id=int(courier_chat),
                 message_id=int(card_id),
                 text=format_order(order, "🚚 Доставка"),
-                reply_markup=courier_status_keyboard(order_id, str(order.get("status")), "paid"),
+                reply_markup=courier_status_keyboard(
+                    order_id,
+                    str(order.get("status")),
+                    "paid",
+                    point=order_point(order),
+                ),
             )
         except Exception:
             pass

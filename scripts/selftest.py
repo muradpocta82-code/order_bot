@@ -1738,6 +1738,27 @@ def test_eta_and_envcheck() -> None:
     check("клиент видит время", "15:40" in message, message)
     check("клиент видит слот", "15-18" in message, message)
 
+    # C12: опоздание относительно слота и ссылка «Открыть в картах»
+    check("в слот успевает", eta.minutes_late(now, 30, "15:00-18:00") == 0)
+    check(
+        "опоздание посчитано",
+        eta.minutes_late(now, 200, "15:00-18:00") == 30,
+        str(eta.minutes_late(now, 200, "15:00-18:00")),
+    )
+    check("без слота — не опаздывает", eta.minutes_late(now, 500, "") == 0)
+    check("слот через полночь", eta.slot_end("22:00-01:00", now).day == 21)
+    late = eta.late_text(7, "15:00-18:00", 30)
+    check("клиенту сказали об опоздании", "опоздание" in late and "30" in late, late)
+
+    from orderbot.route import maps_url, order_point
+
+    point = order_point({"delivery_address": "📍 41.311081, 69.240562"})
+    check("точка из адреса", point == (41.311081, 69.240562), str(point))
+    check("точка из геопина", order_point({"lat": 41.3, "lon": 69.2}) == (41.3, 69.2))
+    check("без координат — нет точки", order_point({"delivery_address": "Ташкент"}) is None)
+    link = maps_url((41.311081, 69.240562))
+    check("ссылка на карты", link.startswith("https://yandex.com/maps/"), link)
+
     import sys as _sys
 
     _sys.path.insert(0, str(BASE_DIR / "scripts"))

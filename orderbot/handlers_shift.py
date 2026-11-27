@@ -16,6 +16,7 @@ from .db import Database
 from .formatting import esc, format_order, money, parse_amount
 from .keyboards import courier_status_keyboard
 from .roles import _is_courier, _is_manager, load_staff_from_db
+from .route import order_point
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +70,9 @@ async def _handle_cash_amount(
                 chat_id=int(courier_chat),
                 message_id=int(card_id),
                 text=format_order(fresh, "🚚 Доставка"),
-                reply_markup=courier_status_keyboard(int(order["id"]), "delivering", "paid"),
+                reply_markup=courier_status_keyboard(
+                    int(order["id"]), "delivering", "paid", point=order_point(fresh)
+                ),
             )
         except Exception:
             log.debug("Не удалось обновить карточку доставщика")

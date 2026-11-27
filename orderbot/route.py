@@ -31,6 +31,26 @@ def parse_coords(text: str | None) -> tuple[float, float] | None:
     return lat, lon
 
 
+def maps_url(point: tuple[float, float]) -> str:
+    """Ссылка «Открыть в картах» — маршрут до клиента (C12)."""
+    lat, lon = point
+    return f"https://yandex.com/maps/?rtext=~{lat:.6f},{lon:.6f}&rtt=auto"
+
+
+def order_point(order: dict[str, Any]) -> tuple[float, float] | None:
+    """Точка доставки заказа: координаты из адреса или геопин клиента (C12)."""
+    point = parse_coords(str(order.get("delivery_address") or ""))
+    if point is not None:
+        return point
+    lat, lon = order.get("lat"), order.get("lon")
+    if lat is None or lon is None:
+        return None
+    try:
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None
+
+
 def distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     """Расстояние по прямой между двумя точками, километры."""
     lat1, lon1 = math.radians(a[0]), math.radians(a[1])

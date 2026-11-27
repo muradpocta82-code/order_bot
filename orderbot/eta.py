@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 DEFAULT_TRAVEL_MIN = 30
@@ -73,3 +74,49 @@ def client_text(order_id: int, now: datetime, minutes: int, slot: str = "") -> s
         lines.append(f"Ваш слот доставки: {slot}.")
     lines.append("Если планы меняются — напишите менеджеру.")
     return "\n".join(lines)
+
+
+SLOT_RE = re.compile(r"(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})")
+
+
+def slot_end(slot: str, day: datetime) -> datetime | None:
+    """Конец слота доставки («10:00-12:00» → 12:00 этого дня).
+
+    Если слот переходит через полночь («22:00-01:00»), конец — следующий день.
+    """
+    match = SLOT_RE.search(str(slot or ""))
+    if not match:
+        return None
+    start_h, start_m = int(match.group(1)), int(match.group(2))
+    end_h, end_m = int(match.group(3)), int(match.group(4))
+    if not (0 <= start_h < 24 and 0 <= end_h < 24 and 0 <= start_m < 60 and 0 <= end_m < 60):
+        return None
+    end = day.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    if (end_h, end_m) < (start_h, start_m):
+        end += timedelta(days=1)
+    return end
+
+
+def minutes_late(now: datetime, minutes: int, slot: str) -> int:
+    """На сколько минут курьер не успевает в слот клиента (0 — успевает)."""
+    end = slot_end(slot, now)
+    if end is None:
+        return 0
+    over = int((arrival(now, minutes) - end).total_seconds() // 60)
+    return over if over > 0 else 0
+
+
+def late_text(order_id: int, slot: str, late: int) -> str:
+    """Предупреждение об опоздании для клиента (C12)."""
+    return (
+        f"⚠️ Похоже, курьер не успевает в выбранное время ({slot}): "
+        f"расчётное опоздание около {late} мин. Менеджер уже в курсе."
+    )
+
+
+def late_manager_text(order_id: int, slot: str, late: int) -> str:
+    """Предупреждение об опоздании для менеджера (C12)."""
+    return (
+        f"⚠️ Заказ №{order_id}: клиент ждёт {slot}, курьер опаздывает "
+        f"примерно на {late} мин. Стоит предупредить или перенести."
+    )
