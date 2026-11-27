@@ -14,7 +14,8 @@ Telegram-бот приёма заказов для оптового постав
 | Что | Где |
 |---|---|
 | Запуск, 13 фоновых циклов, меню команд | `main.py` |
-| Ядро обработчиков (2528 строк) | `orderbot/handlers.py` |
+| Ядро обработчиков (2075 строк) | `orderbot/handlers.py` |
+| Команды (/start, /help, /order, /health …) | `orderbot/handlers_commands.py` |
 | Приём: довес, адрес, телефон, геопин | `orderbot/handlers_intake.py` |
 | Фото, чеки, претензии, горячее предложение | `orderbot/handlers_photos.py` |
 | Касса, сотрудники, смены | `orderbot/handlers_shift.py` |
@@ -30,6 +31,8 @@ Telegram-бот приёма заказов для оптового постав
 | AI: Gemini (текст+голос), локальный план Б | `orderbot/ai.py`, `orderbot/stt.py` |
 | Черновик заказа, прайс, единицы | `orderbot/drafts.py`, `catalog.py`, `units.py` |
 | Счётчик ошибок для тревог | `orderbot/watch.py` |
+| Тексты для нескольких модулей | `orderbot/texts.py` |
+| Время старта и последняя ошибка | `orderbot/runtime.py` |
 | USDT в сети TON | `orderbot/tonflow.py`, `tonpay.py` |
 | Мини-приложение каталога (порт 8443) | `webapp/server.py`, `webapp/index.html` |
 | Бэкап базы (отдельная служба) | `scripts/backup_db.py` + `deploy/order_bot_backup.*` |
