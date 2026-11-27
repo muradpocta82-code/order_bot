@@ -20,6 +20,22 @@
 2. Придумать, в каком чате тестовый бот будет работать (можно ваш личный чат):
    напишите тестовому боту `/start` и возьмите id командой `/id`.
 
+## Уже поднято (27.11.2026)
+
+- Тестовый бот: **@order_bot_testt_bot**, служба `order_bot_staging`.
+- Окружение: `/opt/order_bot/.env.staging` (права 600, владелец orderbot).
+- База: `order_bot_rehearsal` — копия боевой, 22 заказа. Проверено: боевой бот
+  работает с `order_bot`, тестовый — с `order_bot_rehearsal`, токены разные.
+- Чат владельца для тестов: `MANAGER_CHAT_ID`/`COURIER_CHAT_ID` в `.env.staging`.
+- **По умолчанию служба выключена** (держит ~300 МБ памяти): включать на время проверки.
+
+```bash
+systemctl start order_bot_staging     # включить на время теста
+systemctl stop order_bot_staging      # выключить после
+systemctl status order_bot_staging    # состояние
+journalctl -u order_bot_staging -n 30 --no-pager
+```
+
 ## Что делаю я (после токена)
 
 1. Создаю `/opt/order_bot/.env.staging` из боевого `.env`, но с тремя заменами:

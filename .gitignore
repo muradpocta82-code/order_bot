@@ -13,3 +13,7 @@ catalog_full_backup.xlsx
 webapp/certs/
 catalog.xlsx
 *.pem
+
+# секреты окружений: в репозиторий только пример
+.env.*
+!.env.example
