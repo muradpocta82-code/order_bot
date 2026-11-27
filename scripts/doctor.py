@@ -129,10 +129,31 @@ def check_deployment(settings) -> bool:
                     break
         except OSError:
             pass
-    print(
-        f"{OK if offsite else WARN} копия бэкапа вне сервера: "
-        f"{'настроена' if offsite else 'не настроена — docs/OFFSITE_BACKUP.md'}"
-    )
+    # A2: копия вне сервера. Ежедневная отправка дампа менеджеру в Telegram —
+    # это уже копия вне сервера; облако (OFFSITE_REMOTE) — необязательный плюс.
+    manager_chat = (os.getenv("MANAGER_CHAT_ID") or "").strip()
+    telegram_copy = False
+    try:
+        for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MANAGER_CHAT_ID=") and not manager_chat:
+                manager_chat = line.split("=", 1)[1].strip()
+            if line.startswith("OFFSITE_REMOTE=") and not offsite:
+                offsite = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    if manager_chat:
+        telegram_copy = _last_backup_sent(settings) < 48 * 3600
+    if offsite and telegram_copy:
+        print(f"{OK} копия бэкапа вне сервера: облако и Telegram")
+    elif offsite:
+        print(f"{OK} копия бэкапа вне сервера: облако (OFFSITE_REMOTE)")
+    elif telegram_copy:
+        print(f"{OK} копия бэкапа вне сервера: ежедневно в Telegram менеджеру")
+    else:
+        print(
+            f"{WARN} копия бэкапа вне сервера: не настроена — "
+            "нужен MANAGER_CHAT_ID или OFFSITE_REMOTE, docs/OFFSITE_BACKUP.md"
+        )
 
     # F3: страница владельца в мини-приложении.
     owner_token = (os.getenv("OWNER_WEB_TOKEN") or "").strip()
@@ -232,6 +253,27 @@ def http_json(url: str, headers: dict[str, str] | None = None, timeout: int = 15
             return exc.code, {"raw": body[:300]}
     except Exception as exc:  # noqa: BLE001
         return 0, {"error": str(exc)}
+
+
+def _last_backup_sent(settings) -> float:
+    """Сколько секунд назад бот отправлял дамп в Telegram (большое число — не было)."""
+    import time
+
+    try:
+        import psycopg
+
+        with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'last_backup_sent'"
+            ).fetchone()
+    except Exception:  # noqa: BLE001 — без базы считаем, что копии нет
+        return 10**9
+    if not row or not row[0]:
+        return 10**9
+    try:
+        return max(0.0, time.time() - float(row[0]))
+    except (TypeError, ValueError):
+        return 10**9
 
 
 def main() -> int:
