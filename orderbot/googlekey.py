@@ -96,6 +96,5 @@ async def save_key(bot: Bot, settings: Settings, document: Document) -> tuple[bo
         return False, "не удалось сохранить файл на сервере"
 
     set_env_value("GOOGLE_SA_FILE", str(target))
-    settings.google_sa_file = str(target)
     log.info("Ключ сервисного аккаунта Google сохранён (%s)", detail)
     return True, detail

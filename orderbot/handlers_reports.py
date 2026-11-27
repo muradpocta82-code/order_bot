@@ -1802,7 +1802,6 @@ async def cmd_sheets_id(
         )
         return
     set_env_value("SHEETS_ID", raw)
-    settings.sheets_id = raw
     ok, reason = await sheets.check(settings)
     if ok is True:
         await message.answer(
