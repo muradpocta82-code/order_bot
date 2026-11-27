@@ -41,3 +41,31 @@
 - Пароль от облака и rclone-конфиг не пересылать в чат.
 - Если Healthchecks настроен (`HEARTBEAT_URL` в `.env`), скрипт сам сообщит туда об успехе
   или пришлёт `/fail` при ошибке.
+
+## Что уже сделано на сервере (27.11)
+
+- `rclone` установлен (`rclone v1.60.1`).
+- Скрипт и цепочка проверены целиком: копия отправилась, размеры совпали,
+  **дамп из «облака» восстановился** (`verify_backup.py`: 22 заказа).
+- Настройка сводится к одной команде (сама правит `.env` и включает таймер):
+
+```bash
+cd /opt/order_bot
+bash scripts/set_external.sh OFFSITE_REMOTE b2crypt:orderbot-backups
+```
+
+- Проверить состояние без вывода секретов: `bash scripts/set_external.sh --show`.
+
+## Проверка без облака (если хочется убедиться заранее)
+
+`rclone` умеет работать с обычной папкой — годится для репетиции:
+
+```bash
+mkdir -p /tmp/offsite_test
+OFFSITE_REMOTE=/tmp/offsite_test bash scripts/offsite_backup.sh
+ls -l /tmp/offsite_test
+```
+
+Так проверяется вся цепочка, кроме самого облака. Файл из `/tmp/offsite_test` можно
+положить в `data/backups/` и прогнать `venv/bin/python scripts/verify_backup.py` —
+убедиться, что копия восстанавливается.
