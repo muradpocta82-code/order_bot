@@ -9,7 +9,13 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+
+# A13: отдельный файл окружения для тестового бота (staging).
+# По умолчанию — обычный .env; для staging служба задаёт ENV_FILE=.env.staging.
+ENV_FILE = Path(os.getenv("ENV_FILE", "") or (BASE_DIR / ".env"))
+if not ENV_FILE.is_absolute():
+    ENV_FILE = BASE_DIR / ENV_FILE
+load_dotenv(ENV_FILE)
 
 
 def _str(name: str, default: str = "") -> str:

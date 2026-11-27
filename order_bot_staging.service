@@ -1,0 +1,31 @@
+[Unit]
+Description=Order bot STAGING (тестовый бот, отдельный токен и база)
+Documentation=/opt/order_bot/docs/STAGING.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=orderbot
+Group=orderbot
+WorkingDirectory=/opt/order_bot
+# A13: отдельное окружение — свой токен бота и отдельная база.
+EnvironmentFile=/opt/order_bot/.env.staging
+Environment=ENV_FILE=/opt/order_bot/.env.staging
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=Asia/Tashkent
+Environment=STAGING=1
+ExecStart=/opt/order_bot/venv/bin/python /opt/order_bot/main.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+KillSignal=SIGINT
+MemoryMax=700M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=order_bot_staging
+
+[Install]
+WantedBy=multi-user.target
