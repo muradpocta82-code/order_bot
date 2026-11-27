@@ -1776,6 +1776,49 @@ async def cmd_owner(message: Message, settings: Settings) -> None:
     )
 
 
+@router.message(Command("sheets_id"))
+async def cmd_sheets_id(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Идентификатор таблицы Google для выгрузки: /sheets_id 1AbC... (F2)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    from . import sheets
+    from .googlekey import set_env_value
+
+    raw = (command.args or "").strip()
+    raw = raw.split("/d/")[-1].split("/")[0] if "/d/" in raw else raw
+    if not raw:
+        current = sheets.sheet_id(settings) or "не задан"
+        await message.answer(
+            f"📊 Таблица: <code>{esc(current)}</code>\n"
+            "Поставить: <code>/sheets_id 1AbC...</code> (часть ссылки между /d/ и /edit)"
+        )
+        return
+    if not (raw.replace("-", "").replace("_", "").isalnum() and len(raw) >= 20):
+        await message.answer(
+            "Похоже, это не идентификатор таблицы. Он длинный, вида "
+            "<code>1AbCdEf...</code> — часть ссылки между /d/ и /edit."
+        )
+        return
+    set_env_value("SHEETS_ID", raw)
+    settings.sheets_id = raw
+    ok, reason = await sheets.check(settings)
+    if ok is True:
+        await message.answer(
+            "✅ Таблица подключена: /export будет дописывать заказы в лист «Заказы»."
+        )
+        return
+    if ok is False:
+        await message.answer(
+            f"⚠️ Таблица записана, но доступ не подтверждён: {reason}. "
+            "Проверьте, что адрес сервисного аккаунта добавлен в «Доступ» с правами Редактор."
+        )
+        return
+    await message.answer(f"📊 Записано, но пока не готово: {reason}.")
+    return
+
+
 @router.message(Command("sheets"))
 async def cmd_sheets(message: Message, db: Database, settings: Settings) -> None:
     """Статус выгрузки в Google Sheets (F2): /sheets."""

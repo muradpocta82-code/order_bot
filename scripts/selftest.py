@@ -1741,6 +1741,39 @@ async def test_sheets() -> None:
     check("статус без настроек — неизвестно", ok is None and "не найден" in reason, reason)
 
 
+def test_google_key() -> None:
+    print("\n[ключ сервисного аккаунта Google (F2)]")
+    from orderbot import googlekey
+
+    good = {
+        "type": "service_account",
+        "client_email": "bot@proj.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    ok, detail = googlekey.looks_like_service_account(good)
+    check("правильный ключ принимается", ok and detail.startswith("bot@"), detail)
+    check(
+        "чужой JSON не принимается",
+        googlekey.looks_like_service_account({"type": "authorized_user"})[0] is False,
+    )
+    broken = dict(good, private_key="нет ключа")
+    check(
+        "битый ключ не принимается",
+        googlekey.looks_like_service_account(broken)[0] is False,
+    )
+    check(
+        "не JSON-объект не принимается",
+        googlekey.looks_like_service_account(["список"])[0] is False,
+    )
+    no_mail = dict(good)
+    no_mail.pop("client_email")
+    check(
+        "без почты аккаунта не принимается",
+        googlekey.looks_like_service_account(no_mail)[0] is False,
+    )
+
+
 async def test_forget_client() -> None:
     print("\n[удаление личных данных клиента]")
     from orderbot.config import load_settings
@@ -3682,6 +3715,7 @@ async def main() -> int:
     test_eta_and_envcheck()
     await test_sheets()
     test_owner_page()
+    test_google_key()
     await test_forget_client()
     test_suppliers_and_windows()
     test_scripts_quality()

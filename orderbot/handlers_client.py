@@ -50,6 +50,7 @@ from .extras import (
     parse_edit,
 )
 from .replies import forward_note as reply_note
+from .googlekey import save_key as save_google_key  # noqa: E402
 from .formatting import (
     esc,
     format_candidates_question,
@@ -151,6 +152,19 @@ async def on_document(
     if document is None:
         return
     name = (document.file_name or "").lower()
+    if name.endswith(".json"):
+        # F2: ключ сервисного аккаунта Google — сохраняем, содержимое не печатаем.
+        saved, detail = await save_google_key(message.bot, settings, document)
+        if not saved:
+            await message.answer(f"Ключ Google не принят: {detail}.")
+            return
+        await message.answer(
+            "🔑 Ключ принят. Теперь откройте вашу Google-таблицу → «Доступ» "
+            f"и выдайте права <b>Редактор</b> адресу:\n<code>{esc(detail)}</code>\n\n"
+            "Потом пришлите идентификатор таблицы (часть ссылки между /d/ и /edit) "
+            "командой:\n<code>/sheets_id 1AbC...</code>"
+        )
+        return
     if not name.endswith(".xlsx"):
         await message.answer("Нужен файл .xlsx со списком товаров.")
         return

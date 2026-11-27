@@ -30,8 +30,23 @@ log = logging.getLogger(__name__)
 _tokens: dict[str, tuple[str, float]] = {}
 
 
+def _env_value(name: str) -> str:
+    """Значение из .env — чтобы настройка подхватывалась без перезапуска."""
+    try:
+        from .config import BASE_DIR
+
+        for line in (BASE_DIR / ".env").read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{name}="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
 def credentials_path(settings: Settings) -> Path | None:
-    raw = str(getattr(settings, "google_sa_file", "") or "").strip()
+    raw = str(getattr(settings, "google_sa_file", "") or "").strip() or _env_value(
+        "GOOGLE_SA_FILE"
+    )
     if not raw:
         return None
     path = Path(raw)
@@ -39,7 +54,9 @@ def credentials_path(settings: Settings) -> Path | None:
 
 
 def sheet_id(settings: Settings) -> str:
-    return str(getattr(settings, "sheets_id", "") or "").strip()
+    return (
+        str(getattr(settings, "sheets_id", "") or "").strip() or _env_value("SHEETS_ID")
+    )
 
 
 def ready(settings: Settings) -> bool:
