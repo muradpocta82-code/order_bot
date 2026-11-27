@@ -14,6 +14,7 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import (
+    TelegramBadRequest,
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramServerError,
@@ -182,6 +183,28 @@ async def _take_retry(db: Database, chat_id: int) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         return None
     return data if data.get("text") else None
+
+
+async def _edit_panel(
+    bot: "Bot",
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+) -> None:
+    """Меняет одно сообщение вместо отправки нового — чат не забивается."""
+    try:
+        await _send_with_retry(
+            lambda: bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        )
+    except TelegramBadRequest:
+        # Сообщение уже изменили или оно слишком старое — новый дубль не нужен.
+        pass
 
 
 async def _detach_card(

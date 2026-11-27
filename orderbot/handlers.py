@@ -148,6 +148,7 @@ from .handlers_photos import (  # noqa: E402
 )
 from .notify import (
     ERR_ALERT_WINDOW,
+    _edit_panel,
     RETRY_TEXT,
     _close_order_cards,
     _courier_chat,
@@ -316,28 +317,6 @@ def _format_price_diff(diff: dict[str, Any]) -> str:
         for item in diff["added"][:7]:
             lines.append(f"+ {esc(item.name)}")
     return "\n".join(lines)
-
-
-async def _edit_panel(
-    bot: Bot,
-    chat_id: int,
-    message_id: int,
-    text: str,
-    reply_markup=None,
-) -> None:
-    """Меняет одно сообщение вместо отправки нового — чат не забивается."""
-    try:
-        await _send_with_retry(
-            lambda: bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                reply_markup=reply_markup,
-            )
-        )
-    except TelegramBadRequest:
-        # Сообщение уже изменили или оно слишком старое — новый дубль не нужен.
-        pass
 
 
 _draft_locks: dict[str, asyncio.Lock] = {}
@@ -1344,199 +1323,10 @@ from .handlers_courier import router as _courier_handlers  # noqa: E402
 
 router.include_router(_courier_handlers)
 
-@router.callback_query(F.data == "mp:panel")
-async def cb_manager_panel(
-    callback: CallbackQuery, db: Database, settings: Settings
-) -> None:
-    if not await _manager_ok(callback, settings):
-        return
-    try:
-        await callback.message.edit_text(
-            await _manager_panel_text(db), reply_markup=manager_panel_keyboard()
-        )
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
+# I1: панели менеджера и клиента — отдельный роутер.
+from .handlers_panels import router as _panels_router  # noqa: E402
 
-
-async def _show_manager_list(
-    callback: CallbackQuery, kind: str, page: int, db: Database, settings: Settings
-) -> None:
-    if not await _manager_ok(callback, settings):
-        return
-    text, keyboard = await _orders_page(db, kind, page)
-    try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("mp:inbox:"))
-async def cb_manager_inbox(
-    callback: CallbackQuery, db: Database, settings: Settings
-) -> None:
-    try:
-        page = int(callback.data.split(":")[2])
-    except (IndexError, ValueError):
-        page = 0
-    await _show_manager_list(callback, "inbox", page, db, settings)
-
-
-@router.callback_query(F.data.startswith("mp:history:"))
-async def cb_manager_history(
-    callback: CallbackQuery, db: Database, settings: Settings
-) -> None:
-    try:
-        page = int(callback.data.split(":")[2])
-    except (IndexError, ValueError):
-        page = 0
-    await _show_manager_list(callback, "history", page, db, settings)
-
-
-@router.callback_query(F.data.startswith("mp:view:"))
-async def cb_manager_view(
-    callback: CallbackQuery, db: Database, settings: Settings
-) -> None:
-    if not await _manager_ok(callback, settings):
-        return
-    try:
-        _, _, order_raw, kind, page_raw = callback.data.split(":")
-        order_id = int(order_raw)
-        page = int(page_raw)
-    except (ValueError, AttributeError):
-        await callback.answer("Кнопка устарела", show_alert=True)
-        return
-    if kind not in ("inbox", "history"):
-        kind = "history"
-    order = await db.get_order(order_id)
-    if order is None:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
-    try:
-        await callback.message.edit_text(
-            format_order(order, "📦 Заказ"),
-            reply_markup=order_detail_keyboard(
-                order_id, kind, page, str(order.get("status"))
-            ),
-        )
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "cl:price")
-async def cb_client_price(
-    callback: CallbackQuery, catalog: Catalog, settings: Settings, db: Database
-) -> None:
-    if callback.message is None:
-        await callback.answer("Сообщение недоступно", show_alert=True)
-        return
-    keyboard = _back_keyboard(
-        settings,
-        callback.from_user.id,
-        callback.message.chat.id,
-    )
-    rows = resolve_stock(catalog, await db.stock_overrides())
-    await _edit_panel(
-        callback.bot,
-        callback.message.chat.id,
-        callback.message.message_id,
-        format_catalog(catalog, hidden_ids(rows)),
-        keyboard,
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "cl:last")
-async def cb_client_last(callback: CallbackQuery, db: Database) -> None:
-    if callback.message is None:
-        await callback.answer("Сообщение недоступно", show_alert=True)
-        return
-    order = await db.last_order_for_user(callback.from_user.id)
-    text = (
-        "У вас пока нет заказов."
-        if order is None
-        else format_client_order(order, "📦 Последний заказ")
-    )
-    await _edit_panel(
-        callback.bot,
-        callback.message.chat.id,
-        callback.message.message_id,
-        text,
-        client_back_keyboard(),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "cl:menu")
-async def cb_client_menu(
-    callback: CallbackQuery,
-    db: Database,
-    settings: Settings,
-    catalog: Catalog,
-) -> None:
-    if callback.message is None:
-        await callback.answer("Сообщение недоступно", show_alert=True)
-        return
-    if _is_manager(
-        settings,
-        callback.from_user.id,
-        callback.message.chat.id,
-    ):
-        text = await _manager_panel_text(db)
-        keyboard = manager_panel_keyboard()
-    elif _is_courier(
-        settings,
-        callback.from_user.id,
-        callback.message.chat.id,
-    ):
-        list_text, keyboard = await _courier_page(db, 0)
-        text = await _courier_panel_text(db) + "\n\n" + list_text
-    else:
-        text = START_TEXT
-        usually = await db.usual_items(callback.from_user.id)
-        keyboard = client_menu_keyboard(usually, catalog)
-    await _edit_panel(
-        callback.bot,
-        callback.message.chat.id,
-        callback.message.message_id,
-        text,
-        keyboard,
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "cl:help")
-async def cb_client_help(callback: CallbackQuery, settings: Settings) -> None:
-    if callback.message is None:
-        await callback.answer("Сообщение недоступно", show_alert=True)
-        return
-    if _is_manager(
-        settings,
-        callback.from_user.id,
-        callback.message.chat.id,
-    ):
-        text = MANAGER_HELP_TEXT
-        keyboard = manager_back_keyboard()
-    elif _is_courier(
-        settings,
-        callback.from_user.id,
-        callback.message.chat.id,
-    ):
-        text = COURIER_HELP_TEXT
-        keyboard = courier_back_keyboard()
-    else:
-        text = HELP_TEXT
-        keyboard = client_back_keyboard()
-    await _edit_panel(
-        callback.bot,
-        callback.message.chat.id,
-        callback.message.message_id,
-        text,
-        keyboard,
-    )
-    await callback.answer()
+router.include_router(_panels_router)
 
 
 @router.callback_query(F.data.startswith("editok:"))
