@@ -650,6 +650,14 @@ async def _check_error_rate(
     total, per_class = watch.snapshot()
     if total == 0:
         return
+    # A4: внешний монитор тоже должен видеть проблему, а не только «жив».
+    if settings.heartbeat_url and total >= 5:
+        try:
+            await asyncio.to_thread(
+                _ping, settings.heartbeat_url.rstrip("/") + "/fail"
+            )
+        except Exception as exc:  # noqa: BLE001 — пинг не должен ломать тревогу
+            log.debug("Heartbeat /fail не отправлен: %s", exc)
     worst = ", ".join(
         f"{kind}×{count}" for kind, count in per_class.most_common(3)
     )
