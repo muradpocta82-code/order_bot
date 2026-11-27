@@ -8,3 +8,8 @@ models/
 *.dump
 *.dump.part
 catalog_full_backup.xlsx
+
+# A3: не в репозиторий — приватный ключ TLS и коммерческий прайс
+webapp/certs/
+catalog.xlsx
+*.pem
