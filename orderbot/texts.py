@@ -28,6 +28,7 @@ MANAGER_HELP_TEXT = """👔 <b>Упаковщик</b>
 /aliases — общий словарь: /aliases
 /alias_add — добавить фразу: /alias_add с/к бекон = бекон
 /discount — скидка клиенту: /discount 123456789 5
+/bonus — бонус за приглашение: /bonus 5 (0 — выключить)
 /cprice — особая цена: /cprice 123456789 помидоры 1.10
 /venues — точки клиента: /venues 123456789
 /venue_payer — плательщик точки: /venue_payer 123456789 Точка 987654321

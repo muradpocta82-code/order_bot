@@ -701,6 +701,29 @@ async def _advance_draft(
             )
             return True
 
+        # C4: бонус за приглашение — выдаётся один раз, на первый заказ.
+        bonus = float(fresh.get("invite_bonus_pct") or 0)
+        if bonus > 0:
+            try:
+                await db.mark_invite_bonus(
+                    int(fresh.get("user_id") or 0), bonus, order_id
+                )
+                await bot.send_message(
+                    chat_id,
+                    f"🎁 Бонус за приглашение: скидка {bonus:g}% уже в счёте "
+                    f"заказа №{order_id}. Спасибо, что позвали коллегу!",
+                )
+                manager_chat = _manager_chat(settings)
+                if manager_chat:
+                    await bot.send_message(
+                        int(manager_chat),
+                        f"🎁 Заказ №{order_id}: приглашённому клиенту "
+                        f"(id {fresh.get('user_id')}) дана скидка {bonus:g}% "
+                        "за приглашение — бонус разовый.",
+                    )
+            except Exception:
+                log.warning("Не удалось оформить бонус за приглашение №%s", order_id)
+
         log.info(
             "Заказ №%s: позиций=%s, сумма=%s, повар=%s (id=%s)",
             order_id,

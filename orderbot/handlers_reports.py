@@ -1747,6 +1747,45 @@ async def cb_claim_action(
     await callback.answer("Записал решение")
 
 
+@router.message(Command("bonus"))
+async def cmd_bonus(
+    message: Message, command: CommandObject, db: Database, settings: Settings
+) -> None:
+    """Скидка приглашённому клиенту: /bonus 5, /bonus 0 — выключить (C4)."""
+    if not _is_manager(settings, message.from_user.id, message.chat.id):
+        return
+    raw = (command.args or "").strip().replace(",", ".").replace("%", "")
+    if not raw:
+        current = await db.get_setting("invite_bonus_pct", "0") or "0"
+        try:
+            pct = float(current)
+        except ValueError:
+            pct = 0.0
+        state = f"скидка {pct:g}%" if pct > 0 else "выключен"
+        await message.answer(
+            f"🎁 Бонус за приглашение: <b>{state}</b>.\n\n"
+            "Даётся один раз — на первый заказ клиента, который пришёл по ссылке "
+            "из /invite. Складывается с обычной скидкой клиента, но не больше 50%.\n\n"
+            "Поставить: <code>/bonus 5</code> · выключить: <code>/bonus 0</code>"
+        )
+        return
+    try:
+        pct = round(float(raw), 2)
+    except ValueError:
+        await message.answer("Нужен процент числом, например <code>/bonus 5</code>.")
+        return
+    if pct < 0 or pct > 50:
+        await message.answer("Бонус — от 0 до 50%. Выключить: /bonus 0.")
+        return
+    await db.set_setting("invite_bonus_pct", f"{pct:g}")
+    if pct <= 0:
+        await message.answer("🎁 Бонус за приглашение выключен.")
+        return
+    await message.answer(
+        f"🎁 Готово: приглашённый клиент получит скидку {pct:g}% на первый заказ."
+    )
+
+
 @router.message(Command("discount"))
 async def cmd_discount(
     message: Message, command: CommandObject, db: Database, settings: Settings

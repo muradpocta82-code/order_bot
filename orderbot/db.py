@@ -510,6 +510,50 @@ class Database:
     # ------------------------------------------------------------------
     # черновики
     # ------------------------------------------------------------------
+    async def invite_bonus_pct(self, client_id: int) -> float:
+        """Скидка-бонус за приглашение для первого заказа клиента (C4).
+
+        0 — бонуса нет: выключен настройкой, клиент не пришёл по ссылке,
+        бонус уже выдан или он уже заказывал раньше.
+        """
+        if not client_id:
+            return 0.0
+        try:
+            pct = float(await self.get_setting("invite_bonus_pct", "0") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if pct <= 0:
+            return 0.0
+        if not await self.get_setting(f"ref:{int(client_id)}", ""):
+            return 0.0
+        if await self.get_setting(f"bonus_given:{int(client_id)}", ""):
+            return 0.0
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM orders WHERE chef_id = %s AND status != 'cancelled' LIMIT 1",
+            (int(client_id),),
+        )
+        if await cursor.fetchone() is not None:
+            return 0.0
+        return min(50.0, pct)
+
+    async def mark_invite_bonus(
+        self, client_id: int, pct: float, order_id: int | None = None
+    ) -> None:
+        """Помнит, что бонус за приглашение выдан (второй раз не даём)."""
+        if not client_id:
+            return
+        await self.set_setting(
+            f"bonus_given:{int(client_id)}",
+            f"{round(float(pct), 2)}|{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        )
+        if order_id:
+            await self.log_event(
+                int(order_id),
+                "invite_bonus",
+                {"client_id": int(client_id), "pct": round(float(pct), 2)},
+            )
+
     async def create_draft(self, payload: dict[str, Any]) -> None:
         # B13: цены и скидки клиента применяются к черновику один раз.
         await self.apply_client_pricing(payload)
@@ -2044,8 +2088,14 @@ class Database:
             return result
         info = await self.client_discount(client_id)
         discount = float((info or {}).get("discount_pct") or 0)
+        # C4: разовый бонус за приглашение — складывается со скидкой клиента.
+        bonus = await self.invite_bonus_pct(client_id)
+        if bonus > 0:
+            discount = min(100.0, discount + bonus)
+            payload["invite_bonus_pct"] = bonus
         overrides = await self.client_prices_map(client_id)
         result["discount_pct"] = discount
+        result["bonus_pct"] = bonus
         if discount <= 0 and not overrides:
             return result
         saved = 0.0

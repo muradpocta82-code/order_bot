@@ -1918,6 +1918,27 @@ async def test_client_pricing_db() -> None:
             draft3 = {"user_id": client, "items": [{"catalog_id": 4, "qty": 1, "price": 10.0, "sum": 10.0}]}
             await db.apply_client_pricing(draft3)
             check("без правил — цена прайса", draft3["items"][0]["sum"] == 10.0, str(draft3["items"][0]))
+
+            # C4: бонус за приглашение — один раз, на первый заказ
+            invited = 900000001
+            await db.set_setting("invite_bonus_pct", "10")
+            await db.set_setting(f"ref:{invited}", "555")
+            check("бонус приглашённому", await db.invite_bonus_pct(invited) == 10.0)
+            check("без приглашения — нет бонуса", await db.invite_bonus_pct(900000002) == 0.0)
+            draft4 = {"user_id": invited, "items": [{"catalog_id": 4, "qty": 1, "price": 10.0, "sum": 10.0}]}
+            bonus_result = await db.apply_client_pricing(draft4)
+            check(
+                "бонус вошёл в цену",
+                draft4["items"][0]["sum"] == 9.0 and bonus_result["bonus_pct"] == 10.0,
+                str(draft4["items"][0]),
+            )
+            check("в черновике отмечен бонус", draft4.get("invite_bonus_pct") == 10.0, str(draft4.get("invite_bonus_pct")))
+            await db.mark_invite_bonus(invited, 10)
+            check("бонус выдан один раз", await db.invite_bonus_pct(invited) == 0.0)
+            await db.set_setting("invite_bonus_pct", "0")
+            check("бонус выключен настройкой", await db.invite_bonus_pct(900000003) == 0.0)
+            await db.set_setting(f"ref:{invited}", "")
+            await db.set_setting(f"bonus_given:{invited}", "")
         finally:
             await db.close()
 
