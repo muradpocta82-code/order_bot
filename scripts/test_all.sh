@@ -23,6 +23,10 @@ fi
 status=0
 
 # I6: деньги не через float — новые случаи блокируют деплой.
+echo "=== scripts/secret_scan.sh ==="
+./scripts/secret_scan.sh \
+  || { echo "СЕКРЕТЫ В РЕПОЗИТОРИИ"; exit 1; }
+
 echo "=== scripts/money_check.py ==="
 ./venv/bin/python scripts/money_check.py \
   || { echo "НОВЫЕ ДЕНЬГИ ЧЕРЕЗ float — деплой запрещён" >&2; status=1; }
